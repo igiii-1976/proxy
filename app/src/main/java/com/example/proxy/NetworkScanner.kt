@@ -16,9 +16,10 @@ class NetworkScanner(
     private val edgeRegistry: EdgeRegistry,
     private val scope: CoroutineScope
 ) {
+    // 3 second wait time for connection and reading (if no response, cancel)
     private val client = OkHttpClient.Builder()
-        .connectTimeout(20, TimeUnit.SECONDS)
-        .readTimeout(20, TimeUnit.SECONDS)
+        .connectTimeout(3, TimeUnit.SECONDS)
+        .readTimeout(3, TimeUnit.SECONDS)
         .build()
 
     // Scans the entire subnet every 10 mins
@@ -41,9 +42,11 @@ class NetworkScanner(
         }
     }
 
+    // Function for scanning entire network
     private suspend fun scanNetwork() = withContext(Dispatchers.IO) {
-        val proxyIP = getSubnetBase() ?: return@withContext
+        val proxyIP = getIPAddress() ?: return@withContext
 
+        // Extracts subnet base (192.168.1.10 -> 192.168.1)
         val subnet = proxyIP?.substringBeforeLast('.')
 
         val jobs = (1..254).map { i ->
@@ -72,10 +75,10 @@ class NetworkScanner(
                 }
             }
         }
-
         jobs.awaitAll()
     }
 
+    // Function for scanning known Edge Servers
     private suspend fun refreshKnownEdges() = withContext(Dispatchers.IO) {
         val edges = edgeRegistry.getAll()
         for (edge in edges) {
@@ -103,8 +106,8 @@ class NetworkScanner(
         }
     }
 
-    // Extracts the subnet base (ex: 192.168.1.10 -> 192.168.1)
-    private fun getSubnetBase(): String? {
+    // Get the IP
+    private fun getIPAddress(): String? {
         return try {
             val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
             val network = cm.activeNetwork ?: return null

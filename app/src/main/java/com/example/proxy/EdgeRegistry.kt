@@ -39,5 +39,27 @@ class EdgeRegistry {
     fun clear() {
         edges.clear()
     }
+
+    @Synchronized
+    fun chooseHighestBattery(): EdgeDevice? {
+        return edges.values
+            .map { edge ->
+                val numeric = parseBatteryPercent(edge.battery)
+                Pair(edge, numeric)
+            }
+            .filter { it.second >= 0f }        // ignore invalid readings
+            .maxByOrNull { it.second }?.first  // return the EdgeDevice with highest numeric battery
+    }
+
+    private fun parseBatteryPercent(percentStr: String?): Float {
+        if (percentStr.isNullOrBlank()) return -1f
+        // remove % and non-numeric characters, keep digits and dot and minus
+        val cleaned = percentStr.trim().replace("%", "").replace(Regex("[^0-9.\\-]"), "")
+        return try {
+            cleaned.toFloat()
+        } catch (e: Exception) {
+            -1f
+        }
+    }
 }
 
