@@ -18,8 +18,8 @@ class NetworkScanner(
 ) {
     // 3 second wait time for connection and reading (if no response, cancel)
     private val client = OkHttpClient.Builder()
-        .connectTimeout(3, TimeUnit.SECONDS)
-        .readTimeout(3, TimeUnit.SECONDS)
+        .connectTimeout(2, TimeUnit.SECONDS)
+        .readTimeout(2, TimeUnit.SECONDS)
         .build()
 
     // Scans the entire subnet every 10 mins
@@ -45,12 +45,13 @@ class NetworkScanner(
     // Function for scanning entire network
     private suspend fun scanNetwork() = withContext(Dispatchers.IO) {
         val proxyIP = getIPAddress() ?: return@withContext
+        val subnet = proxyIP.substringBeforeLast('.')
 
-        // Extracts subnet base (192.168.1.10 -> 192.168.1)
-        val subnet = proxyIP?.substringBeforeLast('.')
+        // Limit concurrency to a reasonable number (e.g., 32) to avoid saturating the network.
+        val dispatcher = Dispatchers.IO.limitedParallelism(32)
 
         val jobs = (1..254).map { i ->
-            async {
+            scope.async(dispatcher) { // Use the limited dispatcher
                 val ip = "$subnet.$i"
                 if (ip != proxyIP) {
                     val url = "http://$ip:8080/status"

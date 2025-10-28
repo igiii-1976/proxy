@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Android Server</title>
+    <style>
+        body { font-family: sans-serif; padding: 1em; }
+        pre { background-color: #f4f4f4; padding: 10px; border-radius: 5px; word-wrap: break-word; }
+        .section { border-top: 2px solid #ccc; padding-top: 1em; margin-top: 1em; }
+        .auth-status { font-weight: bold; }
+        .hidden { display: none; }
+
+        .actions-container {
+            max-width: 400px;
+            margin-left: 0;
+        }
+        .subsection-separator {
+            margin-top: 1.5em;
+            margin-bottom: 1.5em;
+            border: 0;
+            border-top: 1px solid #eee;
+        }
+    </style>
+</head>
+<body>
+
+<h1>Android Server</h1>
+<p class="auth-status" id="auth-status">Status: Checking login state...</p>
+<hr>
+
+<!-- Login Form Section -->
+<div id="loginSection" class="section">
+    <h2>Login</h2>
+    <form id="loginForm" method="post">
+        <label for="username">Username:</label><br>
+        <input type="text" id="username" name="username" value="testuser"><br><br>
+        <label for="password">Password:</label><br>
+        <input type="password" id="password" name="password" value="password123"><br><br>
+        <button type="submit">Login and Get Token</button>
+    </form>
+</div>
+
+<!-- Secure Actions Section -->
+<div id="actionsSection" class="section hidden">
+    <h2>Actions</h2>
+    <button id="logoutBtn" style="float: right;">Logout</button>
+
+    <div class="actions-container">
+        <h3>Image Recognition</h3>
+        <form id="uploadForm" method="post" enctype="multipart/form-data">
+            <label for="imageFile">Select image to upload:</label><br>
+            <input type="file" id="imageFile" name="imageFile" accept="image/*" required><br><br>
+            <button type="submit">Upload and Recognize</button>
+        </form>
+        <h4>Recognition Result:</h4>
+        <pre id="recognitionResult">-- Results will appear here --</pre>
+
+        <hr class="subsection-separator">
+
+        <h3>Battery Status</h3>
+        <button id="batteryBtn">Check Battery Status</button>
+        <h4>Battery Result:</h4>
+        <pre id="batteryResult">-- Results will appear here --</pre>
+    </div>
+</div>
+
+<script>
+    document.addEventListener('DOMContentLoaded', () => {
+        const storedToken = sessionStorage.getItem('authToken');
+        if (storedToken) {
+            console.log("Found stored token. User is logged in.");
+            showActionsUI(storedToken);
+        } else {
+            console.log("No stored token found. User needs to log in.");
+            showLoginUI(); // Initial state is "Please log in"
+        }
+        setupEventListeners();
+    });
+
+    /**
+     * Handles the UI transition to the login screen.
+     * Can accept an optional message for context.
+     */
+    function showLoginUI(message = 'Please log in.') {
+        document.getElementById('loginSection').classList.remove('hidden');
+        document.getElementById('actionsSection').classList.add('hidden');
+        document.getElementById('auth-status').textContent = `Status: ${message}`;
+        sessionStorage.removeItem('authToken'); // Clear any invalid or expired token
+    }
+
+    /**
+     * Handles the UI transition to the actions screen after a successful login.
+     */
+    function showActionsUI(token) {
+        document.getElementById('loginSection').classList.add('hidden');
+        document.getElementById('actionsSection').classList.remove('hidden');
+        document.getElementById('auth-status').textContent = 'Status: Authenticated.';
+        sessionStorage.setItem('authToken', token); // Store the valid token
+    }
+
+    function setupEventListeners() {
+        const authStatus = document.getElementById('auth-status');
+        const recognitionResultElement = document.getElementById('recognitionResult');
+        const batteryResultElement = document.getElementById('batteryResult');
+
+        document.getElementById('loginForm').addEventListener('submit', async function(event) {
+            event.preventDefault();
+            authStatus.textContent = 'Status: Authenticating...';
+            const formData = new FormData(this);
+            try {
+                const response = await fetch('/login', { method: 'POST', body: formData });
+                if (response.ok) {
+                    const data = await response.json();
+                    showActionsUI(data.token); // Success -> show actions
+                } else {
+                    const errorText = await response.text();
+                    showLoginUI(`Login failed - ${errorText}`); // Failure -> show login with error
+                }
+            } catch (error) {
+                authStatus.textContent = `Status: Network Error - ${error.message}`;
+            }
+        });
+
+        document.getElementById('logoutBtn').addEventListener('click', () => {
+            showLoginUI("You have been logged out."); // Logout -> show login with message
+        });
+
+        document.getElementById('uploadForm').addEventListener('submit', async function(event) {
+            event.preventDefault();
+            const token = sessionStorage.getItem('authToken');
+            if (!token) {
+                showLoginUI('Authentication error. Please log in again.');
+                return;
+            }
+            recognitionResultElement.textContent = 'Uploading and processing...';
+            const formData = new FormData(this);
+            try {
+                const response = await fetch('/recognize', {
+                    method: 'POST',
+                    headers: { 'Authorization': `Bearer ${token}` },
+                    body: formData
+                });
+
+                // FIX: If unauthorized, redirect to login with a clear message.
+                if (response.status === 401) {
+                    showLoginUI('Session expired. Please log in again.');
+                    return;
+                }
+
+                const resultData = await response.json();
+                recognitionResultElement.textContent = response.ok
+                    ? JSON.stringify(resultData, null, 2)
+                    : `Error: ${response.status} - ${JSON.stringify(resultData)}`;
+            } catch (error) {
+                recognitionResultElement.textContent = `Network Error: ${error.message}`;
+            }
+        });
+
+        document.getElementById('batteryBtn').addEventListener('click', async () => {
+            const token = sessionStorage.getItem('authToken');
+            if (!token) {
+                showLoginUI('Authentication error. Please log in again.');
+                return;
+            }
+            batteryResultElement.textContent = 'Fetching battery status...';
+            try {
+                const response = await fetch('/battery', {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+
+                // FIX: If unauthorized, redirect to login with a clear message.
+                if (response.status === 401) {
+                    showLoginUI('Session expired. Please log in again.');
+                    return;
+                }
+
+                const resultData = await response.json();
+                batteryResultElement.textContent = response.ok
+                    ? JSON.stringify(resultData, null, 2)
+                    : `Error: ${response.status} - ${JSON.stringify(resultData)}`;
+            } catch (error) {
+                batteryResultElement.textContent = `Network Error: ${error.message}`;
+            }
+        });
+    }
+</script>
+</body>
+</html>

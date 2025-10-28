@@ -51,11 +51,17 @@ class MainActivity : ComponentActivity() {
         // Start network scanner
         scanner = NetworkScanner(this, edgeRegistry, mainScope)
 
-        // Full subnet scan (every 10 minutes for now maybe)
-        scanner?.startScanPeriodically(10 * 60 * 1000L)
+        mainScope.launch {
+            // Add a delay before the first heavy scan
+            delay(15_000L) // Wait 15 seconds after startup
+            scanner?.startScanPeriodically(10 * 60 * 1000L)
+        }
 
-        // Lightweight refresh of known edges every 2 minutes
-        scanner?.startRefreshPeriodically(2 * 60 * 1000L)
+        mainScope.launch {
+            // Refresh can start a bit earlier, but still with a small delay
+            delay(5_000L) // Wait 5 seconds
+            scanner?.startRefreshPeriodically(2 * 60 * 1000L)
+        }
 
         // Remove old edges
         mainScope.launch {
