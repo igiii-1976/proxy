@@ -20,7 +20,8 @@ class MainActivity : ComponentActivity() {
     private val edgeRegistry = EdgeRegistry()
     private val mainScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var proxy: ProxyServer? = null
-    private var scanner: NetworkScanner? = null
+    private var discovery: EdgeDiscovery? = null
+
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -48,20 +49,9 @@ class MainActivity : ComponentActivity() {
             }
         }.start()
 
-        // Start network scanner
-        scanner = NetworkScanner(this, edgeRegistry, mainScope)
-
-        mainScope.launch {
-            // Add a delay before the first heavy scan
-            delay(15_000L) // Wait 15 seconds after startup
-            scanner?.startScanPeriodically(10 * 60 * 1000L)
-        }
-
-        mainScope.launch {
-            // Refresh can start a bit earlier, but still with a small delay
-            delay(5_000L) // Wait 5 seconds
-            scanner?.startRefreshPeriodically(2 * 60 * 1000L)
-        }
+        // Start edge discovery
+        discovery = EdgeDiscovery(this, edgeRegistry, mainScope)
+        discovery?.startDiscovery()
 
         // Remove old edges
         mainScope.launch {
@@ -112,6 +102,7 @@ class MainActivity : ComponentActivity() {
         super.onDestroy()
         try {
             proxy?.stop()
+            discovery?.stopDiscovery()
             mainScope.cancel()
         } catch (e: Exception) {
             Log.e("MainActivity", "Cleanup error", e)
