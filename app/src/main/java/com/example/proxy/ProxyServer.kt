@@ -33,6 +33,7 @@ class ProxyServer(
             uri == "/" && method == Method.GET -> handleHtmlRequest()
             uri == "/login" && method == Method.POST -> handleLoginRequest(session)
             uri == "/recognize" && method == Method.POST -> handleRecognitionRequest(session)
+            uri == "/battery" && method == Method.GET -> handleBatteryRequest(session)
             else -> newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "404 Not Found")
         }
     }
@@ -170,5 +171,40 @@ class ProxyServer(
         }
     }
 
+    private fun handleBatteryRequest(session: IHTTPSession): Response {
+        val edge = edgeRegistry.chooseHighestBattery()
+            ?: return newFixedLengthResponse(
+                Response.Status.SERVICE_UNAVAILABLE,
+                "text/plain", "No edge servers available for battery status"
+            )
+
+        val edgeUrl = "http://${edge.ip}:8080/battery"
+        Log.i("ProxyServer", "Forwarding battery request to edge: $edgeUrl")
+
+        val authorization = session.headers["authorization"]
+
+        return try {
+            val requestBuilder = Request.Builder().url(edgeUrl)
+
+            if (authorization != null) {
+                requestBuilder.header("Authorization", authorization)
+            }
+
+            client.newCall(requestBuilder.build()).execute().use { edgeResponse ->
+                val bytes = edgeResponse.body?.bytes() ?: ByteArray(0)
+                val mime = edgeResponse.header("Content-Type") ?: "application/json"
+
+                newFixedLengthResponse(
+                    Response.Status.lookup(edgeResponse.code) ?: Response.Status.OK,
+                    mime,
+                    ByteArrayInputStream(bytes),
+                    bytes.size.toLong()
+                )
+            }
+        } catch (e: Exception) {
+            Log.e("ProxyServer", "Error forwarding /battery", e)
+            newFixedLengthResponse(Response.Status.INTERNAL_ERROR, "text/plain", "Proxy Error: ${e.message}")
+        }
+    }
 
 }
