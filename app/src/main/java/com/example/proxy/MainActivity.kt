@@ -40,28 +40,13 @@ class MainActivity : ComponentActivity() {
 
         // Start proxy server
         proxy = ProxyServer(edgeRegistry, 8080)
-        Thread {
-            try {
-                proxy?.start(NanoHTTPD.SOCKET_READ_TIMEOUT, false)
-                Log.i("MainActivity", "Proxy server started on 8080")
-            } catch (e: Exception) {
-                Log.e("MainActivity", "Proxy start failed", e)
-            }
-        }.start()
+        proxy?.start()
 
         // Start edge discovery
         discovery = EdgeDiscovery(this, edgeRegistry, mainScope)
         discovery?.startDiscovery()
 
-        // Remove old edges
-        mainScope.launch {
-            while (isActive) {
-                edgeRegistry.removeStale(120_000L)
-                delay(30_000L)
-            }
-        }
-
-        // 🖥️ UI
+        // UI
         setContent {
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize().padding(16.dp)) {

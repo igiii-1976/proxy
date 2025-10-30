@@ -142,16 +142,19 @@
                     body: formData
                 });
 
-                // FIX: If unauthorized, redirect to login with a clear message.
-                if (response.status === 401) {
-                    showLoginUI('Session expired. Please log in again.');
-                    return;
-                }
+                // Check if the response is OK before parsing JSON
+                if (response.ok) {
+                    const resultData = await response.json(); // Only parse JSON on success
+                    recognitionResultElement.textContent = JSON.stringify(resultData, null, 2);
+                } else {
+                    // For errors, display the plain text response from the server
+                    const errorText = await response.text();
+                    recognitionResultElement.textContent = `Error: ${response.status} - ${errorText}`;
 
-                const resultData = await response.json();
-                recognitionResultElement.textContent = response.ok
-                    ? JSON.stringify(resultData, null, 2)
-                    : `Error: ${response.status} - ${JSON.stringify(resultData)}`;
+                    if (response.status === 401) {
+                        showLoginUI('Session expired. Please log in again.');
+                    }
+                }
             } catch (error) {
                 recognitionResultElement.textContent = `Network Error: ${error.message}`;
             }
