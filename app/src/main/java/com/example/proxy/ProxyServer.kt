@@ -15,7 +15,8 @@ import java.util.concurrent.TimeUnit
 
 class ProxyServer(
     private val edgeRegistry: EdgeRegistry,
-    port: Int
+    port: Int,
+    private val logger: (String) -> Unit // <-- ADD THIS
 ) : NanoHTTPD(port) {
 
     private val client = OkHttpClient.Builder()
@@ -27,6 +28,7 @@ class ProxyServer(
     override fun serve(session: IHTTPSession): Response {
         val uri = session.uri
         val method = session.method
+        logger("Incoming request: $method $uri") // <-- REPLACE Log.i with logger()
         Log.i("ProxyServer", "Incoming request: $method $uri")
 
         return when {
@@ -43,6 +45,7 @@ class ProxyServer(
             ?: return newFixedLengthResponse(Response.Status.SERVICE_UNAVAILABLE, "text/plain", "No edge servers available")
 
         val edgeUrl = "http://${edge.ip}:8080/"
+        logger("Fetching HTML from edge: $edgeUrl")
         Log.i("ProxyServer", "Fetching HTML from edge: $edgeUrl")
 
         return try {
@@ -57,6 +60,7 @@ class ProxyServer(
                 )
             }
         } catch (e: Exception) {
+            logger("Error fetching HTML")
             Log.e("ProxyServer", "Error fetching HTML", e)
             newFixedLengthResponse(Response.Status.INTERNAL_ERROR, "text/plain", "Proxy Error: ${e.message}")
         }
@@ -67,6 +71,7 @@ class ProxyServer(
             ?: return newFixedLengthResponse(Response.Status.SERVICE_UNAVAILABLE, "text/plain", "No edge servers available")
 
         val edgeUrl = "http://${edge.ip}:8080${session.uri}"
+        logger("Forwarding login to $edgeUrl")
         Log.i("ProxyServer", "Forwarding login to $edgeUrl")
 
         return try {
@@ -97,6 +102,7 @@ class ProxyServer(
                 )
             }
         } catch (e: Exception) {
+            logger("Error forwarding /login")
             Log.e("ProxyServer", "Error forwarding /login", e)
             newFixedLengthResponse(Response.Status.INTERNAL_ERROR, "text/plain", "Proxy Error: ${e.message}")
         }
@@ -110,6 +116,7 @@ class ProxyServer(
             )
 
         val edgeUrl = "http://${edge.ip}:8080/recognize"
+        logger("Forwarding image request to edge: $edgeUrl")
         Log.i("ProxyServer", "Forwarding image request to edge: $edgeUrl")
 
         val contentType = session.headers["content-type"]
@@ -118,7 +125,6 @@ class ProxyServer(
                 "Content-Type header is missing for recognition request"
             )
 
-        // Defensive check
         if (!contentType.startsWith("multipart/form-data", ignoreCase = true)) {
             return newFixedLengthResponse(
                 Response.Status.BAD_REQUEST, "text/plain",
@@ -128,15 +134,17 @@ class ProxyServer(
 
         val authorization = session.headers["authorization"]
 
-        return try {
-            // Save image data temporarily
+        var tempImageFile: java.io.File? = null
+
+        try {
             val tempFiles = mutableMapOf<String, String>()
             session.parseBody(tempFiles)
 
             val tempImageFilePath = tempFiles["imageFile"]
                 ?: throw IOException("File 'imageFile' not found in multipart request.")
 
-            val tempImageFile = java.io.File(tempImageFilePath)
+            tempImageFile = java.io.File(tempImageFilePath)
+            logger("Successfully received file from client at: $tempImageFilePath")
             Log.i("ProxyServer", "Successfully received file from client at: $tempImageFilePath")
 
             val requestBody = okhttp3.MultipartBody.Builder()
@@ -154,7 +162,7 @@ class ProxyServer(
                 requestBuilder.header("Authorization", authorization)
             }
 
-            client.newCall(requestBuilder.build()).execute().use { edgeResponse ->
+            return client.newCall(requestBuilder.build()).execute().use { edgeResponse ->
                 val bytes = edgeResponse.body?.bytes() ?: ByteArray(0)
                 val mime = edgeResponse.header("Content-Type") ?: "application/json"
 
@@ -166,10 +174,23 @@ class ProxyServer(
                 )
             }
         } catch (e: Exception) {
+            logger("Error forwarding /recognize")
             Log.e("ProxyServer", "Error forwarding /recognize", e)
-            newFixedLengthResponse(Response.Status.INTERNAL_ERROR, "text/plain", "Proxy Error: ${e.message}")
+            return newFixedLengthResponse(Response.Status.INTERNAL_ERROR, "text/plain", "Proxy Error: ${e.message}")
+        } finally {
+            // clean up temp file
+            if (tempImageFile?.exists() == true) {
+                if (tempImageFile.delete()) {
+                    logger("Successfully deleted temp file: ${tempImageFile.path}")
+                    Log.i("ProxyServer", "Successfully deleted temp file: ${tempImageFile.path}")
+                } else {
+                    logger("Failed to delete temp file: ${tempImageFile.path}")
+                    Log.w("ProxyServer", "Failed to delete temp file: ${tempImageFile.path}")
+                }
+            }
         }
     }
+
 
     private fun handleBatteryRequest(session: IHTTPSession): Response {
         val edge = edgeRegistry.chooseHighestBattery()
