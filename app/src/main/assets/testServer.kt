@@ -112,10 +112,7 @@ class testServer(
             // Handles secure battery status requests
             method == fi.iki.elonen.NanoHTTPD.Method.GET && uri == "/battery" -> handleSecureBatteryRequest(session)
 
-            // Changes for cycle 5: Reverse proxy server
-            // Handles status request by proxy (bypasses authentication - need security changes in the future)
             method == fi.iki.elonen.NanoHTTPD.Method.GET && uri == "/status" -> handleBatteryRequest()
-
 
             // Catches any other unhandled requests
             else -> {
@@ -412,4 +409,10 @@ class testServer(
         response.addHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         return response
     }
+
+    while (true) {
+        for each file: upload → await response
+        allow user to cancel via stop button
+    }
+
 }

@@ -87,6 +87,9 @@ class MainActivity : ComponentActivity() {
         discovery = EdgeDiscovery(this, edgeRegistry, mainScope, UiLogger::log) // Pass the log function
         discovery?.startDiscovery()
 
+        // Periodic battery updates
+        startPeriodicMaintenance()
+
         // UI
         setContent {
             MaterialTheme {
@@ -159,6 +162,23 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    private fun startPeriodicMaintenance() {
+        mainScope.launch {
+            while (isActive) {
+                delay( 60 * 1000L) // 1 minutes
+
+                // Refresh the status of all currently known edges.
+                discovery?.refreshKnownEdges()
+
+//                // Remove any edges that haven't responded recently.
+//                val removedCount = edgeRegistry.removeStale(6 * 60 * 1000L)
+//                if (removedCount > 0) {
+//                    UiLogger.log("Removed $removedCount stale edge server(s).")
+//                }
             }
         }
     }

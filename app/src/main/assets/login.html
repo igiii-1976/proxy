@@ -21,6 +21,14 @@
             border: 0;
             border-top: 1px solid #eee;
         }
+
+        #batchRecognitionResult {
+            max-height: 300px; /* Set a maximum height */
+            overflow-y: auto;  /* Add a vertical scrollbar when content exceeds the height */
+            border: 1px solid #ccc; /* Add a border to define the box */
+            background-color: #f8f8f8; /* A light background for the log area */
+        }
+
     </style>
 </head>
 <body>
@@ -55,6 +63,17 @@
         </form>
         <h4>Recognition Result:</h4>
         <pre id="recognitionResult">-- Results will appear here --</pre>
+
+        <hr class="subsection-separator">
+        <h3>Batch Image Recognition (Loop)</h3>
+        <form id="batchUploadForm" method="post" enctype="multipart/form-data">
+            <label for="batchImageFiles">Select multiple images to upload:</label><br>
+            <input type="file" id="batchImageFiles" name="batchImageFiles" accept="image/*" multiple required><br><br>
+            <button type="submit">Start Batch Upload</button>
+            <button type="button" id="stopBatchUploadBtn" class="hidden">Stop Upload</button>
+        </form>
+        <h4>Batch Recognition Status & Result:</h4>
+        <pre id="batchRecognitionResult">-- Batch results will appear here --</pre>
 
         <hr class="subsection-separator">
 
@@ -141,7 +160,6 @@
                     headers: { 'Authorization': `Bearer ${token}` },
                     body: formData
                 });
-
                 // Check if the response is OK before parsing JSON
                 if (response.ok) {
                     const resultData = await response.json(); // Only parse JSON on success
@@ -152,13 +170,116 @@
                     recognitionResultElement.textContent = `Error: ${response.status} - ${errorText}`;
 
                     if (response.status === 401) {
-                        showLoginUI('Session expired. Please log in again.');
+                       showLoginUI('Session expired. Please log in again.');
                     }
                 }
+<!--                // FIX: If unauthorized, redirect to login with a clear message.-->
+<!--                if (response.status === 401) {-->
+<!--                    showLoginUI('Session expired. Please log in again.');-->
+<!--                    return;-->
+<!--                }-->
+
+<!--                const resultData = await response.json();-->
+<!--                recognitionResultElement.textContent = response.ok-->
+<!--                    ? JSON.stringify(resultData, null, 2)-->
+<!--                    : `Error: ${response.status} - ${JSON.stringify(resultData)}`;-->
             } catch (error) {
                 recognitionResultElement.textContent = `Network Error: ${error.message}`;
             }
         });
+
+        let isBatchUploadCancelled = false;
+        const stopBatchBtn = document.getElementById('stopBatchUploadBtn');
+
+        // Listener for the new stop button
+        stopBatchBtn.addEventListener('click', () => {
+            isBatchUploadCancelled = true;
+            console.log("Batch upload cancellation requested by user.");
+        });
+
+        document.getElementById('batchUploadForm').addEventListener('submit', async function(event) {
+            event.preventDefault();
+            const token = sessionStorage.getItem('authToken');
+            const fileInput = document.getElementById('batchImageFiles');
+            const statusDiv = document.getElementById('batchRecognitionResult');
+
+            if (!token) {
+                showLoginUI('Authentication error. Please log in again.');
+                return;
+            }
+            const files = fileInput.files;
+            if (files.length === 0) {
+                statusDiv.textContent = 'Please select one or more files to upload.';
+                return;
+            }
+
+            // --- LOGIC FOR INDEFINITE LOOP AND CANCELLATION ---
+            isBatchUploadCancelled = false; // Reset cancellation flag
+            statusDiv.textContent = 'Starting indefinite upload loop...\n'; // Clear previous results
+            stopBatchBtn.classList.remove('hidden'); // Show the stop button
+            this.querySelector('button[type="submit"]').disabled = true; // Disable start button
+
+            let totalUploads = 0;
+            // The "while (true)" loop makes it indefinite
+            while (true) {
+                // Check for cancellation at the start of each full cycle
+                if (isBatchUploadCancelled) {
+                    statusDiv.textContent += `\n\nBatch upload stopped by user.`;
+                    break; // Exit the main while loop
+                }
+
+                // Inner loop to go through the selected files
+                for (let i = 0; i < files.length; i++) {
+                    // Also check for cancellation before each file upload
+                    if (isBatchUploadCancelled) {
+                        statusDiv.textContent += `\n\nBatch upload stopped by user.`;
+                        // This break will only exit the inner for-loop
+                        break;
+                    }
+
+                    totalUploads++;
+                    const file = files[i];
+
+                    // Append progress to the status div
+                    const progressMessage = `\n[Upload #${totalUploads}] Processing ${file.name}...`;
+                    statusDiv.textContent += progressMessage;
+
+                    const formData = new FormData();
+                    formData.append('imageFile', file);
+
+                    try {
+                        const response = await fetch('/recognize', {
+                            method: 'POST',
+                            headers: { 'Authorization': `Bearer ${token}` },
+                            body: formData
+                        });
+
+                        if (response.ok) {
+                            const resultData = await response.json();
+                            statusDiv.textContent += ` OK\n${JSON.stringify(resultData, null, 2)}\n`;
+                        } else {
+                            const errorText = await response.text();
+                            statusDiv.textContent += ` FAILED: ${response.status} - ${errorText}\n`;
+                            if (response.status === 401) {
+                                showLoginUI('Session expired. Please log in again.');
+                                isBatchUploadCancelled = true; // Set flag to stop the outer loop
+                                break;
+                            }
+                        }
+                    } catch (error) {
+                        statusDiv.textContent += ` FAILED: Network Error - ${error.message}\n`;
+                        isBatchUploadCancelled = true; // Stop on critical network error
+                        break;
+                    }
+                    statusDiv.scrollTop = statusDiv.scrollHeight; // Auto-scroll to the bottom
+                } // End of inner for-loop
+            } // End of outer while-loop
+
+            // --- CLEANUP AFTER LOOP FINISHES OR IS STOPPED ---
+            stopBatchBtn.classList.add('hidden'); // Hide the stop button again
+            this.querySelector('button[type="submit"]').disabled = false; // Re-enable start button
+        });
+
 
         document.getElementById('batteryBtn').addEventListener('click', async () => {
             const token = sessionStorage.getItem('authToken');

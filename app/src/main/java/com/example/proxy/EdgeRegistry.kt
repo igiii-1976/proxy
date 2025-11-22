@@ -30,9 +30,25 @@ class EdgeRegistry {
     fun getAll(): List<EdgeDevice> = edges.values.toList()
 
     @Synchronized
-    fun removeStale(timeoutMs: Long) {
+    fun remove(ip: String) {
+        edges.remove(ip)
+    }
+
+    @Synchronized
+    fun removeStale(stalenessThresholdMs: Long): Int {
         val now = System.currentTimeMillis()
-        edges.entries.removeIf { now - it.value.lastSeen > timeoutMs }
+        val originalSize = edges.size
+
+        val iterator = edges.entries.iterator()
+        while (iterator.hasNext()) {
+            val entry = iterator.next()
+            if (now - entry.value.lastSeen > stalenessThresholdMs) {
+                iterator.remove()
+            }
+        }
+
+        val newSize = edges.size
+        return originalSize - newSize
     }
 
     @Synchronized

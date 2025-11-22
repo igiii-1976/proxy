@@ -52,8 +52,26 @@ class EdgeDiscovery(
 
             override fun onServiceLost(service: NsdServiceInfo) {
                 // When an edge server unregisters itself.
-                logger("Service lost: ${service.serviceName}")
+                logger("Service lost: ${service.serviceName}. Removing from registry.")
                 Log.i("EdgeDiscovery", "Service lost: ${service.serviceName}")
+
+                // Parse the IP from the service name and remove the edge from EdgeRegistry
+                try {
+                    if (service.serviceName.startsWith("EdgeServer_")) {
+                        val parsableIp = service.serviceName.substringAfter("EdgeServer_")
+                        val ipAddress = parsableIp.replace('-', '.') // Revert to "192.168.1.10"
+
+                        edgeRegistry.remove(ipAddress)
+                        logger("Removed $ipAddress from EdgeRegistry")
+                        Log.i("EdgeDiscovery", "Successfully removed lost edge server: $ipAddress")
+                    } else {
+                        logger("Could not parse IP from lost service name: ${service.serviceName}")
+                        Log.w("EdgeDiscovery", "Could not parse IP from lost service name: ${service.serviceName}")
+                    }
+                } catch (e: Exception) {
+                    logger("Error while processing lost service: ${e.message}")
+                    Log.e("EdgeDiscovery", "Error processing lost service", e)
+                }
             }
 
             override fun onDiscoveryStopped(serviceType: String) {
@@ -111,19 +129,34 @@ class EdgeDiscovery(
                     val level = json.optString("level", "Unknown")
                     val status = json.optString("status", "Unknown")
                     edgeRegistry.upsert(ip, level, status)
-                    logger("Successfully queried edge at $ip. Added to registry.")
+                    logger("Successfully queried edge at $ip. Added/updated to registry.")
                     Log.d("EdgeDiscovery", "Successfully queried edge at $ip. Added to registry.")
                 } else {
                     logger("Failed to query status for $ip. HTTP ${response.code}")
-                    Log.w(
-                        "EdgeDiscovery",
-                        "Failed to query status for $ip. HTTP ${response.code}"
-                    )
+                    Log.w("EdgeDiscovery", "Failed to query status for $ip. HTTP ${response.code}")
+                    edgeRegistry.remove(ip)
                 }
             }
         } catch (e: Exception) {
             logger("Error querying status for $ip: ${e.message}")
             Log.e("EdgeDiscovery", "Error querying status for $ip: ${e.message}")
+            edgeRegistry.remove(ip)
+        }
+    }
+
+    fun refreshKnownEdges() {
+        logger("Starting periodic refresh of known edge servers...")
+        val knownEdges = edgeRegistry.getAll()
+        if (knownEdges.isEmpty()) {
+            logger("No known edges to refresh.")
+            return
+        }
+
+        logger("Refreshing ${knownEdges.size} edge(s).")
+        for (edge in knownEdges) {
+            scope.launch(Dispatchers.IO) {
+                queryEdgeStatus(edge.ip, 8080)
+            }
         }
     }
 

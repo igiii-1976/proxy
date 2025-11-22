@@ -16,7 +16,7 @@ import java.util.concurrent.TimeUnit
 class ProxyServer(
     private val edgeRegistry: EdgeRegistry,
     port: Int,
-    private val logger: (String) -> Unit // <-- ADD THIS
+    private val logger: (String) -> Unit
 ) : NanoHTTPD(port) {
 
     private val client = OkHttpClient.Builder()
