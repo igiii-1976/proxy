@@ -87,6 +87,9 @@ class MainActivity : ComponentActivity() {
         discovery = EdgeDiscovery(this, edgeRegistry, mainScope, UiLogger::log) // Pass the log function
         discovery?.startDiscovery()
 
+        // Initialize the decision logger
+        DecisionLogger.initialize(applicationContext)
+
         // Periodic battery updates
         startPeriodicMaintenance()
 
@@ -173,12 +176,6 @@ class MainActivity : ComponentActivity() {
 
                 // Refresh the status of all currently known edges.
                 discovery?.refreshKnownEdges()
-
-//                // Remove any edges that haven't responded recently.
-//                val removedCount = edgeRegistry.removeStale(6 * 60 * 1000L)
-//                if (removedCount > 0) {
-//                    UiLogger.log("Removed $removedCount stale edge server(s).")
-//                }
             }
         }
     }
@@ -190,6 +187,7 @@ class MainActivity : ComponentActivity() {
             proxy?.stop()
             discovery?.stopDiscovery()
             mainScope.cancel()
+            DecisionLogger.close()
         } catch (e: Exception) {
             Log.e("MainActivity", "Cleanup error", e)
         }

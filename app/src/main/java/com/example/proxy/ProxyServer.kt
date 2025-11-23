@@ -115,6 +115,8 @@ class ProxyServer(
                 "text/plain", "No edge servers available for recognition"
             )
 
+        DecisionLogger.record(session.uri, edge)
+
         val edgeUrl = "http://${edge.ip}:8080/recognize"
         logger("Forwarding image request to edge: $edgeUrl")
         Log.i("ProxyServer", "Forwarding image request to edge: $edgeUrl")
