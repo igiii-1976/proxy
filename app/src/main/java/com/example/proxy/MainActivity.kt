@@ -17,7 +17,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import fi.iki.elonen.NanoHTTPD
+import com.example.proxy.logger.DecisionLogger
+import com.example.proxy.mdnsDiscovery.EdgeDevice
+import com.example.proxy.mdnsDiscovery.EdgeDiscovery
+import com.example.proxy.mdnsDiscovery.EdgeRegistry
 import kotlinx.coroutines.*
 import java.text.SimpleDateFormat
 import java.util.*
@@ -84,7 +87,8 @@ class MainActivity : ComponentActivity() {
 
         // Start edge discovery
         UiLogger.log("Starting Edge Discovery...")
-        discovery = EdgeDiscovery(this, edgeRegistry, mainScope, UiLogger::log) // Pass the log function
+        discovery =
+            EdgeDiscovery(this, edgeRegistry, mainScope, UiLogger::log) // Pass the log function
         discovery?.startDiscovery()
 
         // Initialize the decision logger
@@ -172,7 +176,7 @@ class MainActivity : ComponentActivity() {
     private fun startPeriodicMaintenance() {
         mainScope.launch {
             while (isActive) {
-                delay( 60 * 1000L) // 1 minutes
+                delay( 2 * 60 * 1000L) // 2 minutes
 
                 // Refresh the status of all currently known edges.
                 discovery?.refreshKnownEdges()

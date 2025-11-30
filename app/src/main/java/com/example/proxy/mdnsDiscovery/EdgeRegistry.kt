@@ -1,4 +1,4 @@
-package com.example.proxy
+package com.example.proxy.mdnsDiscovery
 
 data class EdgeDevice(
     val ip: String,

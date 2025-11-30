@@ -1,12 +1,15 @@
-package com.example.proxy
+package com.example.proxy.logger
 
 import android.content.Context
 import android.os.Environment
 import android.util.Log
+import com.example.proxy.mdnsDiscovery.EdgeDevice
+import com.example.proxy.UiLogger
 import java.io.File
 import java.io.FileWriter
 
 object DecisionLogger {
+
     private var fileWriter: FileWriter? = null
     private var isInitialized = false
 
@@ -16,13 +19,10 @@ object DecisionLogger {
         if (isInitialized) return
 
         try {
-            // Get the public Documents directory
             val documentsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS)
-            val logFile = File(documentsDir, "proxy_decisions.csv")
+            val logFile = File(documentsDir, "proxy_decisions_detailed.csv") // New filename
 
-            // Check if file is new to write the header
             val writeHeader = !logFile.exists()
-
             fileWriter = FileWriter(logFile, true)
 
             if (writeHeader) {
@@ -37,28 +37,38 @@ object DecisionLogger {
         }
     }
 
-    // Records a new routing decision by writing it to the CSV file.
+    // This should be called immediately after choosing an edge.
+    fun createRecord(requestPath: String, chosenEdge: EdgeDevice): Decision {
+        return Decision(
+            timestampOfReceivingRequest = System.currentTimeMillis(),
+            requestPath = requestPath,
+            chosenEdgeIp = chosenEdge.ip,
+            edgeBatteryPercent = chosenEdge.battery
+        )
+    }
+
+    // This should be called just before returning the final response to the client.
     @Synchronized
-    fun record(requestPath: String, chosenEdge: EdgeDevice) {
+    fun finalizeAndWrite(decision: Decision) {
         if (!isInitialized) {
             Log.w("DecisionLogger", "Logger not initialized. Cannot record decision.")
             return
         }
 
-        val newDecision = Decision(requestPath = requestPath, chosenEdgeIp = chosenEdge.ip)
+        // Set the final timestamp before writing.
+        decision.timestampOfSendingResponse = System.currentTimeMillis()
+
         try {
-            // Append the new decision as a CSV line
-            fileWriter?.append(newDecision.toCsvLine())
+            fileWriter?.append(decision.toCsvLine())
             fileWriter?.flush()
 
-            UiLogger.log("Decision: '${newDecision.requestPath}' -> Edge ${newDecision.chosenEdgeIp}")
+            UiLogger.log("Decision '${decision.requestPath}': " + "Edge ${decision.chosenEdgeIp} | " + "RTT ${decision.rttMs}ms")
         } catch (e: Exception) {
             Log.e("DecisionLogger", "Failed to write to log file", e)
         }
     }
 
 
-    // Closes the file writer. Should be called when the app is destroyed.
     @Synchronized
     fun close() {
         try {
