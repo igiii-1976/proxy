@@ -36,7 +36,12 @@ class ProxyServer(
         return when {
             uri == "/" && method == Method.GET -> handleHtmlRequest()
             uri == "/login" && method == Method.POST -> handleLoginRequest(session)
+
             uri == "/recognize" && method == Method.POST -> handleRecognitionRequest(session)
+            uri.startsWith("/result/") && method == Method.GET -> handleForwardingRequest(session)
+            uri == "/queue-status" && method == Method.GET -> handleForwardingRequest(session)
+            uri == "/set-concurrency" && method == Method.POST -> handleForwardingRequest(session)
+
             uri == "/battery" && method == Method.GET -> handleBatteryRequest(session)
             uri == "/download" && method == Method.GET -> handleFileDownloadRequest(session)
             else -> newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "404 Not Found")
@@ -118,8 +123,11 @@ class ProxyServer(
                 "text/plain", "No edge servers available for recognition"
             )
 
+        // Capture the client's Request ID
+        val clientRequestId = session.headers["x-client-request-id"] ?: "unknown"
+
         // First decision call (request endpoint, chosen edge IP, edge IP battery)
-        val decision = DecisionLogger.createRecord(session.uri, edge)
+        val decision = DecisionLogger.createRecord(session.uri, edge, clientRequestId)
 
         val edgeUrl = "http://${edge.ip}:8080/recognize"
         logger("Forwarding image request to edge: $edgeUrl")
@@ -165,30 +173,48 @@ class ProxyServer(
                 )
                 .build()
 
-            val requestBuilder = Request.Builder().url(edgeUrl).post(requestBody)
+            val requestBuilder = Request.Builder()
+                .url(edgeUrl)
+                .post(requestBody)
+                .header("X-Client-Request-ID", clientRequestId)
+
+            // RECORD FORWARDING TIMESTAMP
+            decision.timestampOfForwardingRequest = System.currentTimeMillis()
 
             if (authorization != null) {
                 requestBuilder.header("Authorization", authorization)
             }
 
             return client.newCall(requestBuilder.build()).execute().use { edgeResponse ->
-                val bytes = edgeResponse.body?.bytes() ?: ByteArray(0)
-                val mime = edgeResponse.header("Content-Type") ?: "application/json"
-                // Final decision call (for timestamp of sending response back to client)
-                DecisionLogger.finalizeAndWrite(decision)
+//                val bytes = edgeResponse.body?.bytes() ?: ByteArray(0)
+//                val mime = edgeResponse.header("Content-Type") ?: "application/json"
+
+                val status = if (edgeResponse.code == 202)
+                    Response.Status.ACCEPTED
+                else
+                    Response.Status.lookup(edgeResponse.code) ?: Response.Status.OK
+
+                val responseBody = edgeResponse.body?.bytes() ?: ByteArray(0)
+
+                // Finalize log as "Accepted"
+                decision.status = "Accepted"
 
                 newFixedLengthResponse(
-                    Response.Status.lookup(edgeResponse.code) ?: Response.Status.OK,
-                    mime,
-                    ByteArrayInputStream(bytes),
-                    bytes.size.toLong()
+                    status,
+                    edgeResponse.header("Content-Type") ?: "application/json",
+                    ByteArrayInputStream(responseBody),
+                    responseBody.size.toLong()
                 )
             }
 
         } catch (e: Exception) {
+            // Decision logger
+            decision.status = "Proxy_Error"
             DecisionLogger.finalizeAndWrite(decision)
+
             logger("Error forwarding /recognize")
             Log.e("ProxyServer", "Error forwarding /recognize", e)
+
             return newFixedLengthResponse(Response.Status.INTERNAL_ERROR, "text/plain", "Proxy Error: ${e.message}")
         } finally {
             // clean up temp file
@@ -249,7 +275,7 @@ class ProxyServer(
             )
 
         // First decision call (request endpoint, chosen edge IP, edge IP battery)
-        val decision = DecisionLogger.createRecord(session.uri, edge)
+        val decision = DecisionLogger.createRecord(session.uri, edge, "unknown")
 
         // Construct the full URL, including the query string
         val queryString = if (session.queryParameterString != null) "?${session.queryParameterString}" else ""
@@ -272,11 +298,19 @@ class ProxyServer(
                     return newFixedLengthResponse(Response.Status.lookup(edgeResponse.code), "text/plain", errorBody)
                 }
 
-                // STORE: Read the entire file from the edge server
+                // Decision call for status (if response is success or not)
+                if (edgeResponse.isSuccessful) {
+                    decision.status = "Success"
+                } else {
+                    decision.status = "Edge_Error_${edgeResponse.code}"
+                }
+
+                // Read the entire file from the edge server
                 val fileBytes = edgeResponse.body?.bytes() ?: ByteArray(0)
 
                 // Second decision call (for file size)
                 decision.fileSizeBytes = fileBytes.size.toLong()
+
                 logger("Successfully downloaded ${fileBytes.size} bytes from edge.")
                 Log.i("ProxyServer", "Successfully downloaded ${fileBytes.size} bytes from edge.")
 
@@ -296,10 +330,53 @@ class ProxyServer(
                 )
             }
         } catch (e: Exception) {
+            // Decision logger for proxy error
+            decision.status = "Proxy_Error"
             DecisionLogger.finalizeAndWrite(decision)
+
             logger("Error forwarding /download request")
             Log.e("ProxyServer", "Error forwarding /download request", e)
+
             newFixedLengthResponse(Response.Status.INTERNAL_ERROR, "text/plain", "Proxy Error: ${e.message}")
         }
     }
+
+    private fun handleForwardingRequest(session: IHTTPSession): Response {
+        val edge = edgeRegistry.chooseHighestBattery()
+            ?: return newFixedLengthResponse(Response.Status.SERVICE_UNAVAILABLE, "text/plain", "No edge")
+
+        val edgeUrl = "http://${edge.ip}:8080${session.uri}"
+
+        val clientRequestId = session.headers["x-client-request-id"] ?: "unknown"
+        val decision = DecisionLogger.getRecord(clientRequestId)
+
+        val request = Request.Builder()
+            .url(edgeUrl)
+            .get()
+            .build()
+
+        return client.newCall(request).execute().use { edgeResponse ->
+            // RECORD RECEIVING FROM EDGE TIMESTAMP
+            decision?.timestampOfReceivingEdgeResponse = System.currentTimeMillis()
+
+            val body = edgeResponse.body?.bytes() ?: ByteArray(0)
+
+            if (edgeResponse.code == 200 && decision != null) {
+                decision.status = "Success"
+                DecisionLogger.finalizeAndWrite(decision) // This sets timestampOfSendingResponse
+            } else if (edgeResponse.code >= 400 && decision != null) {
+                decision.status = "Final_Error_${edgeResponse.code}"
+                DecisionLogger.finalizeAndWrite(decision)
+            }
+
+            newFixedLengthResponse(
+                Response.Status.lookup(edgeResponse.code) ?: Response.Status.OK,
+                edgeResponse.header("Content-Type") ?: "application/json",
+                ByteArrayInputStream(body),
+                body.size.toLong()
+            )
+        }
+    }
+
 }
+

@@ -176,7 +176,7 @@ class MainActivity : ComponentActivity() {
     private fun startPeriodicMaintenance() {
         mainScope.launch {
             while (isActive) {
-                delay( 2 * 60 * 1000L) // 2 minutes
+                delay( 1 * 60 * 1000L) // 1 minute
 
                 // Refresh the status of all currently known edges.
                 discovery?.refreshKnownEdges()

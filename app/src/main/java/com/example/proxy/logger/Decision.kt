@@ -6,14 +6,17 @@ import java.util.Locale
 import java.util.UUID
 
 data class Decision(
-    val requestID: String = UUID.randomUUID().toString(),
+    val requestID: String,
     val timestampOfReceivingRequest: Long,
+    var timestampOfForwardingRequest: Long? = null,
+    var timestampOfReceivingEdgeResponse: Long? = null,
     var timestampOfSendingResponse: Long? = null,
     val requestPath: String,
     val chosenEdgeIp: String,
     val edgeBatteryPercent: String,
     var imageSizeBytes: Long? = null,
-    var fileSizeBytes: Long? = null
+    var fileSizeBytes: Long? = null,
+    var status: String = "In_Progress"
 ) {
     // Helper function to calculate Round-Trip Time (RTT) in milliseconds.
     val rttMs: Long?
@@ -28,36 +31,40 @@ data class Decision(
         val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault())
 
         val receivedTimestamp = sdf.format(Date(timestampOfReceivingRequest))
-        val sentTimestamp = if (timestampOfSendingResponse != null) sdf.format(
-            Date(
-                timestampOfSendingResponse!!
-            )
-        ) else ""
+        val forwardTimestamp = if (timestampOfForwardingRequest != null) sdf.format(Date(timestampOfForwardingRequest!!)) else ""
+        val edgeReceiveTimestamp = if (timestampOfReceivingEdgeResponse != null) sdf.format(Date(timestampOfReceivingEdgeResponse!!)) else ""
+        val sentTimestamp = if (timestampOfSendingResponse != null) sdf.format(Date(timestampOfSendingResponse!!)) else ""
 
-        // Use empty strings for null numeric values to keep CSV structure clean.
         return "$requestID," +
                 "$receivedTimestamp," +
+                "$forwardTimestamp," +
+                "$edgeReceiveTimestamp," +
                 "$sentTimestamp," +
                 "$requestPath," +
                 "$chosenEdgeIp," +
                 "$edgeBatteryPercent," +
                 "${imageSizeBytes ?: ""}," +
                 "${fileSizeBytes ?: ""}," +
-                "${rttMs ?: ""}\n"
+                "${rttMs ?: ""}," +
+                "$status\n"
     }
+
 
     companion object {
         // Returns the CSV header row.
         fun getCsvHeader(): String {
             return "RequestID," +
                     "TimestampReceive," +
+                    "TimestampForward," +
+                    "TimestampEdgeReceive," +
                     "TimestampSend," +
                     "RequestPath," +
                     "ChosenEdgeIp," +
                     "EdgeBatteryPercent," +
                     "ImageSizeBytes," +
                     "FileSizeBytes," +
-                    "RttMS\n"
+                    "RttMS," +
+                    "Status\n"
         }
     }
 }
