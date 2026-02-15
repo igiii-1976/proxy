@@ -58,6 +58,9 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // Keep screen awake, for stress testing
+        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
         val connectedEdges = mutableStateListOf<EdgeDevice>()
         val logMessages = mutableStateListOf<String>()
 
