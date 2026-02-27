@@ -5,10 +5,12 @@ import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -21,6 +23,7 @@ import com.example.proxy.logger.DecisionLogger
 import com.example.proxy.mdnsDiscovery.EdgeDevice
 import com.example.proxy.mdnsDiscovery.EdgeDiscovery
 import com.example.proxy.mdnsDiscovery.EdgeRegistry
+import com.example.proxy.mdnsDiscovery.RoutingAlgorithm
 import kotlinx.coroutines.*
 import java.text.SimpleDateFormat
 import java.util.*
@@ -103,13 +106,28 @@ class MainActivity : ComponentActivity() {
         // UI
         setContent {
             MaterialTheme {
+                var showSettings by remember { mutableStateOf(false) }
+
                 Surface(modifier = Modifier.fillMaxSize()) {
                     Column(
                         modifier = Modifier.padding(16.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Top
                     ) {
-                        Text("Android Proxy Server", style = MaterialTheme.typography.headlineSmall)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {    Text("Android Proxy Server", style = MaterialTheme.typography.headlineSmall)
+
+                            IconButton(onClick = { showSettings = true }) {
+                                Icon(
+                                    imageVector = androidx.compose.material.icons.Icons.Default.Settings,
+                                    contentDescription = "Settings"
+                                )
+                            }
+                        }
+
                         Spacer(Modifier.height(16.dp))
 
                         // Edge Server List (occupies the top part)
@@ -171,10 +189,61 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     }
+
+                    if (showSettings) {
+                        AlertDialog(
+                            onDismissRequest = { showSettings = false },
+                            confirmButton = {
+                                TextButton(onClick = { showSettings = false }) {
+                                    Text("Close")
+                                }
+                            },
+                            title = { Text("Select Routing Algorithm") },
+                            text = {
+                                Column(modifier = Modifier.fillMaxWidth()) {
+                                    // Iterate through all values in the RoutingAlgorithm Enum
+                                    RoutingAlgorithm.values().forEach { algo ->
+                                        val isSelected = edgeRegistry.selectedAlgorithm == algo
+
+                                        Surface(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clickable {
+                                                    edgeRegistry.selectedAlgorithm = algo
+                                                    UiLogger.log("Algorithm changed to: ${algo.name}")
+                                                    showSettings = false // Close dialog after selection
+                                                },
+                                            color = if (isSelected) MaterialTheme.colorScheme.primaryContainer
+                                            else Color.Transparent,
+                                            shape = MaterialTheme.shapes.small
+                                        ) {
+                                            Row(
+                                                modifier = Modifier
+                                                    .padding(16.dp)
+                                                    .fillMaxWidth(),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                RadioButton(
+                                                    selected = isSelected,
+                                                    onClick = null // Handled by the Surface clickable
+                                                )
+                                                Spacer(modifier = Modifier.width(12.dp))
+                                                Text(
+                                                    text = algo.name.lowercase().replaceFirstChar { it.uppercase() }.replace("_", " "),
+                                                    style = MaterialTheme.typography.bodyLarge
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        )
+                    }
                 }
             }
         }
     }
+
 
     private fun startPeriodicMaintenance() {
         mainScope.launch {

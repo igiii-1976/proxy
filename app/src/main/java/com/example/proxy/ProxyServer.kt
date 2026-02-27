@@ -49,7 +49,7 @@ class ProxyServer(
     }
 
     private fun handleHtmlRequest(): Response {
-        val edge = edgeRegistry.chooseHighestBattery()
+        val edge = edgeRegistry.getBestEdge()
             ?: return newFixedLengthResponse(Response.Status.SERVICE_UNAVAILABLE, "text/plain", "No edge servers available")
 
         val edgeUrl = "http://${edge.ip}:8080/"
@@ -75,7 +75,7 @@ class ProxyServer(
     }
 
     private fun handleLoginRequest(session: IHTTPSession): Response {
-        val edge = edgeRegistry.chooseHighestBattery()
+        val edge = edgeRegistry.getBestEdge()
             ?: return newFixedLengthResponse(Response.Status.SERVICE_UNAVAILABLE, "text/plain", "No edge servers available")
 
         val edgeUrl = "http://${edge.ip}:8080${session.uri}"
@@ -117,7 +117,7 @@ class ProxyServer(
     }
 
     private fun handleRecognitionRequest(session: IHTTPSession): Response {
-        val edge = edgeRegistry.chooseHighestBattery()
+        val edge = edgeRegistry.getBestEdge()
             ?: return newFixedLengthResponse(
                 Response.Status.SERVICE_UNAVAILABLE,
                 "text/plain", "No edge servers available for recognition"
@@ -231,44 +231,62 @@ class ProxyServer(
     }
 
 
+
     private fun handleBatteryRequest(session: IHTTPSession): Response {
-        val edge = edgeRegistry.chooseHighestBattery()
-            ?: return newFixedLengthResponse(
-                Response.Status.SERVICE_UNAVAILABLE,
-                "text/plain", "No edge servers available for battery status"
-            )
+        val edge = edgeRegistry.getBestEdge()
+            ?: return newFixedLengthResponse(Response.Status.SERVICE_UNAVAILABLE, "text/plain", "No edge")
+
+        // 1. Capture Client Request ID
+        val clientRequestId = session.headers["x-client-request-id"] ?: "unknown"
+
+        // 2. Create the Decision Record
+        val decision = DecisionLogger.createRecord(session.uri, edge, clientRequestId)
 
         val edgeUrl = "http://${edge.ip}:8080/battery"
-        Log.i("ProxyServer", "Forwarding battery request to edge: $edgeUrl")
+        val requestBuilder = Request.Builder()
+            .url(edgeUrl)
+            .header("X-Client-Request-ID", clientRequestId)
 
-        val authorization = session.headers["authorization"]
+        session.headers["authorization"]?.let {
+            requestBuilder.header("Authorization", it)
+        }
+
+        // 3. Record Forwarding Timestamp
+        decision.timestampOfForwardingRequest = System.currentTimeMillis()
 
         return try {
-            val requestBuilder = Request.Builder().url(edgeUrl)
-
-            if (authorization != null) {
-                requestBuilder.header("Authorization", authorization)
-            }
-
             client.newCall(requestBuilder.build()).execute().use { edgeResponse ->
+                // 4. Record Edge Response Timestamp
+                decision.timestampOfReceivingEdgeResponse = System.currentTimeMillis()
+
                 val bytes = edgeResponse.body?.bytes() ?: ByteArray(0)
-                val mime = edgeResponse.header("Content-Type") ?: "application/json"
+
+                if (edgeResponse.isSuccessful) {
+                    decision.status = "Battery_Success"
+                } else {
+                    decision.status = "Battery_Edge_Error_${edgeResponse.code}"
+                }
+
+                // 5. Finalize the Log (sets timestampOfSendingResponse)
+                DecisionLogger.finalizeAndWrite(decision)
 
                 newFixedLengthResponse(
                     Response.Status.lookup(edgeResponse.code) ?: Response.Status.OK,
-                    mime,
+                    edgeResponse.header("Content-Type") ?: "application/json",
                     ByteArrayInputStream(bytes),
                     bytes.size.toLong()
                 )
             }
         } catch (e: Exception) {
-            Log.e("ProxyServer", "Error forwarding /battery", e)
-            newFixedLengthResponse(Response.Status.INTERNAL_ERROR, "text/plain", "Proxy Error: ${e.message}")
+            decision.status = "Battery_Proxy_Error"
+            DecisionLogger.finalizeAndWrite(decision)
+            Log.e("ProxyServer", "Battery request failed", e)
+            newFixedLengthResponse(Response.Status.INTERNAL_ERROR, "text/plain", "Error: ${e.message}")
         }
     }
 
     private fun handleFileDownloadRequest(session: IHTTPSession): Response {
-        val edge = edgeRegistry.chooseHighestBattery()
+        val edge = edgeRegistry.getBestEdge()
             ?: return newFixedLengthResponse(
                 Response.Status.SERVICE_UNAVAILABLE,
                 "text/plain", "No edge servers available for file download"
@@ -342,7 +360,7 @@ class ProxyServer(
     }
 
     private fun handleForwardingRequest(session: IHTTPSession): Response {
-        val edge = edgeRegistry.chooseHighestBattery()
+        val edge = edgeRegistry.getBestEdge()
             ?: return newFixedLengthResponse(Response.Status.SERVICE_UNAVAILABLE, "text/plain", "No edge")
 
         val edgeUrl = "http://${edge.ip}:8080${session.uri}"

@@ -7,8 +7,40 @@ data class EdgeDevice(
     val lastSeen: Long = System.currentTimeMillis()
 )
 
+enum class RoutingAlgorithm {
+    HIGHEST_BATTERY,
+    RANDOM
+}
+
 class EdgeRegistry {
     private val edges = mutableMapOf<String, EdgeDevice>()
+
+    var selectedAlgorithm = RoutingAlgorithm.HIGHEST_BATTERY
+
+    @Synchronized
+    fun getBestEdge(): EdgeDevice? {
+        return when (selectedAlgorithm) {
+            RoutingAlgorithm.RANDOM -> getRandomEdge()
+            RoutingAlgorithm.HIGHEST_BATTERY -> chooseHighestBattery()
+        }
+    }
+
+    private fun getRandomEdge(): EdgeDevice? {
+        val allEdges = edges.values.toList()
+        if (allEdges.isEmpty()) return null
+        return allEdges.random()
+    }
+
+    @Synchronized
+    fun chooseHighestBattery(): EdgeDevice? {
+        return edges.values
+            .map { edge ->
+                val numeric = parseBatteryPercent(edge.battery)
+                Pair(edge, numeric)
+            }
+            .filter { it.second >= 0f }        // ignore invalid readings
+            .maxByOrNull { it.second }?.first  // return the EdgeDevice with highest numeric battery
+    }
 
     @Synchronized
     fun upsert(ip: String, battery: String, status: String) {
@@ -54,17 +86,6 @@ class EdgeRegistry {
     @Synchronized
     fun clear() {
         edges.clear()
-    }
-
-    @Synchronized
-    fun chooseHighestBattery(): EdgeDevice? {
-        return edges.values
-            .map { edge ->
-                val numeric = parseBatteryPercent(edge.battery)
-                Pair(edge, numeric)
-            }
-            .filter { it.second >= 0f }        // ignore invalid readings
-            .maxByOrNull { it.second }?.first  // return the EdgeDevice with highest numeric battery
     }
 
     private fun parseBatteryPercent(percentStr: String?): Float {
