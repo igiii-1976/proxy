@@ -147,7 +147,9 @@ class MainActivity : ComponentActivity() {
                                         Column(modifier = Modifier.padding(12.dp)) {
                                             Text("IP: ${edge.ip}")
                                             Text("Battery: ${edge.battery}")
-                                            Text("Status: ${edge.status}")
+                                            Text("Avg RTT (Long): ${String.format("%.2f", edge.avgLongRtt)} ms", color = Color.Red)
+                                            Text("Avg RTT (Short): ${String.format("%.2f", edge.avgShortRtt)} ms", color = Color.Blue)
+                                            Text("Active Queue: ${edge.currentQueue}")
                                         }
                                     }
                                 }

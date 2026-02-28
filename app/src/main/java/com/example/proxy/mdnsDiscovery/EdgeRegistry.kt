@@ -4,13 +4,17 @@ data class EdgeDevice(
     val ip: String,
     val battery: String,
     val status: String,
-    val lastSeen: Long = System.currentTimeMillis()
+    val lastSeen: Long = System.currentTimeMillis(),
+    val longRttHistory: MutableList<Long> = mutableListOf(),
+    val shortRttHistory: MutableList<Long> = mutableListOf(),
+    var avgLongRtt: Double = 0.0,
+    var avgShortRtt: Double = 0.0,
+    var currentQueue: Int = 0
 )
 
-enum class RoutingAlgorithm {
-    HIGHEST_BATTERY,
-    RANDOM
-}
+enum class TaskType { LONG, SHORT }
+
+enum class RoutingAlgorithm { HIGHEST_BATTERY, RANDOM, RTT_MS }
 
 class EdgeRegistry {
     private val edges = mutableMapOf<String, EdgeDevice>()
@@ -18,10 +22,11 @@ class EdgeRegistry {
     var selectedAlgorithm = RoutingAlgorithm.HIGHEST_BATTERY
 
     @Synchronized
-    fun getBestEdge(): EdgeDevice? {
+    fun getBestEdge(taskType: TaskType): EdgeDevice? {
         return when (selectedAlgorithm) {
             RoutingAlgorithm.RANDOM -> getRandomEdge()
             RoutingAlgorithm.HIGHEST_BATTERY -> chooseHighestBattery()
+            RoutingAlgorithm.RTT_MS -> chooseLowestRtt(taskType)
         }
     }
 
@@ -32,7 +37,7 @@ class EdgeRegistry {
     }
 
     @Synchronized
-    fun chooseHighestBattery(): EdgeDevice? {
+    private fun chooseHighestBattery(): EdgeDevice? {
         return edges.values
             .map { edge ->
                 val numeric = parseBatteryPercent(edge.battery)
@@ -40,6 +45,52 @@ class EdgeRegistry {
             }
             .filter { it.second >= 0f }        // ignore invalid readings
             .maxByOrNull { it.second }?.first  // return the EdgeDevice with highest numeric battery
+    }
+
+    private fun chooseLowestRtt(taskType: TaskType): EdgeDevice? {
+        val allEdges = edges.values.toList()
+        if (allEdges.isEmpty()) return null
+
+        // Priority 1: Initial Config (Check specific history based on task type)
+        val edgesWithNoHistory = allEdges.filter {
+            if (taskType == TaskType.LONG) it.longRttHistory.isEmpty()
+            else it.shortRttHistory.isEmpty()
+        }
+
+        if (edgesWithNoHistory.isNotEmpty()) return edgesWithNoHistory.random()
+
+        // Priority 2: Effective RTT using specific average
+        return allEdges.minByOrNull { edge ->
+            val baseRtt = if (taskType == TaskType.LONG) edge.avgLongRtt else edge.avgShortRtt
+            baseRtt * (1 + edge.currentQueue)
+        }
+    }
+
+    @Synchronized
+    fun updateRtt(ip: String, newRtt: Long, taskType: TaskType) {
+        val edge = edges[ip] ?: return
+        val history = if (taskType == TaskType.LONG) edge.longRttHistory else edge.shortRttHistory
+
+        history.add(newRtt)
+        if (history.size > 20) history.removeAt(0)
+
+        if (taskType == TaskType.LONG) {
+            edge.avgLongRtt = history.average()
+        } else {
+            edge.avgShortRtt = history.average()
+        }
+    }
+
+    @Synchronized
+    fun incrementQueue(ip: String) {
+        edges[ip]?.let { it.currentQueue++ }
+    }
+
+    @Synchronized
+    fun decrementQueue(ip: String) {
+        edges[ip]?.let {
+            if (it.currentQueue > 0) it.currentQueue--
+        }
     }
 
     @Synchronized
