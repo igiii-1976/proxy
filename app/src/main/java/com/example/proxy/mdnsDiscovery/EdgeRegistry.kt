@@ -1,5 +1,7 @@
 package com.example.proxy.mdnsDiscovery
 
+import java.util.concurrent.ConcurrentHashMap
+
 data class EdgeDevice(
     val ip: String,
     val battery: String,
@@ -17,9 +19,13 @@ enum class TaskType { LONG, SHORT }
 enum class RoutingAlgorithm { HIGHEST_BATTERY, RANDOM, RTT_MS }
 
 class EdgeRegistry {
-    private val edges = mutableMapOf<String, EdgeDevice>()
+    private val edges = ConcurrentHashMap<String, EdgeDevice>()
 
     var selectedAlgorithm = RoutingAlgorithm.HIGHEST_BATTERY
+
+    // --- Round Robin Counters for Probing ---
+    private var lastLongProbeIndex = 0
+    private var lastShortProbeIndex = 0
 
     @Synchronized
     fun getBestEdge(taskType: TaskType): EdgeDevice? {
@@ -51,20 +57,33 @@ class EdgeRegistry {
         val allEdges = edges.values.toList()
         if (allEdges.isEmpty()) return null
 
-        // Priority 1: Initial Config (Check specific history based on task type)
+        // Priority 1: Round Robin Probing for Edges with No History
         val edgesWithNoHistory = allEdges.filter {
             if (taskType == TaskType.LONG) it.longRttHistory.isEmpty()
             else it.shortRttHistory.isEmpty()
-        }
+        }.sortedBy { it.ip }
 
-        if (edgesWithNoHistory.isNotEmpty()) return edgesWithNoHistory.random()
+        if (edgesWithNoHistory.isNotEmpty()) {
+            return if (taskType == TaskType.LONG) {
+                val index = lastLongProbeIndex % edgesWithNoHistory.size
+                val edge = edgesWithNoHistory[index]
+                lastLongProbeIndex++ // Increment for next call
+                edge
+            } else {
+                val index = lastShortProbeIndex % edgesWithNoHistory.size
+                val edge = edgesWithNoHistory[index]
+                lastShortProbeIndex++ // Increment for next call
+                edge
+            }
+        }
 
         // Priority 2: Effective RTT using specific average
         return allEdges.minByOrNull { edge ->
             val baseRtt = if (taskType == TaskType.LONG) edge.avgLongRtt else edge.avgShortRtt
-            baseRtt * (1 + edge.currentQueue)
+            baseRtt * (1 + (edge.currentQueue * 0.3))
         }
     }
+
 
     @Synchronized
     fun updateRtt(ip: String, newRtt: Long, taskType: TaskType) {
@@ -72,7 +91,7 @@ class EdgeRegistry {
         val history = if (taskType == TaskType.LONG) edge.longRttHistory else edge.shortRttHistory
 
         history.add(newRtt)
-        if (history.size > 20) history.removeAt(0)
+//        if (history.size > 20) history.removeAt(0)
 
         if (taskType == TaskType.LONG) {
             edge.avgLongRtt = history.average()
@@ -103,7 +122,6 @@ class EdgeRegistry {
                 lastSeen = System.currentTimeMillis()
             )
         } else {
-            // Add new entry
             edges[ip] = EdgeDevice(ip, battery, status, System.currentTimeMillis())
         }
     }
@@ -128,6 +146,12 @@ class EdgeRegistry {
             if (now - entry.value.lastSeen > stalenessThresholdMs) {
                 iterator.remove()
             }
+        }
+
+        // Reset counters if all edges are lost/stale to start fresh
+        if (edges.isEmpty()) {
+            lastLongProbeIndex = 0
+            lastShortProbeIndex = 0
         }
 
         val newSize = edges.size

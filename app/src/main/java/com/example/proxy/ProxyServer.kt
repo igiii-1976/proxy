@@ -130,28 +130,25 @@ class ProxyServer(
         // Capture the client's Request ID
         val clientRequestId = session.headers["x-client-request-id"] ?: "unknown"
 
-        // First decision call (request endpoint, chosen edge IP, edge IP battery)
+        // 1. Create the initial decision record (sets timestampOfReceivingRequest)
         val decision = DecisionLogger.createRecord(session.uri, edge, clientRequestId)
 
         val edgeUrl = "http://${edge.ip}:8080/recognize"
         logger("Forwarding image request to edge: $edgeUrl")
-        Log.i("ProxyServer", "Forwarding image request to edge: $edgeUrl")
 
         val contentType = session.headers["content-type"]
             ?: return newFixedLengthResponse(
                 Response.Status.BAD_REQUEST, "text/plain",
-                "Content-Type header is missing for recognition request"
+                "Content-Type header is missing"
             )
 
         if (!contentType.startsWith("multipart/form-data", ignoreCase = true)) {
-            return newFixedLengthResponse(
-                Response.Status.BAD_REQUEST, "text/plain",
-                "Unsupported content type for /recognize: was '$contentType', expected 'multipart/form-data'."
-            )
+            decision.status = "Client_Error_400"
+            DecisionLogger.finalizeAndWrite(decision)
+            return newFixedLengthResponse(Response.Status.BAD_REQUEST, "text/plain", "Invalid Content-Type")
         }
 
         val authorization = session.headers["authorization"]
-
         var tempImageFile: java.io.File? = null
 
         try {
@@ -162,11 +159,7 @@ class ProxyServer(
                 ?: throw IOException("File 'imageFile' not found in multipart request.")
 
             tempImageFile = java.io.File(tempImageFilePath)
-
-            // Second decision call (for image file size)
             decision.imageSizeBytes = tempImageFile.length()
-            logger("Successfully received file from client at: $tempImageFilePath")
-            Log.i("ProxyServer", "Successfully received file from client at: $tempImageFilePath")
 
             val requestBody = okhttp3.MultipartBody.Builder()
                 .setType(okhttp3.MultipartBody.FORM)
@@ -182,34 +175,36 @@ class ProxyServer(
                 .post(requestBody)
                 .header("X-Client-Request-ID", clientRequestId)
 
-            // RECORD FORWARDING TIMESTAMP
-            decision.timestampOfForwardingRequest = System.currentTimeMillis()
-
             if (authorization != null) {
                 requestBuilder.header("Authorization", authorization)
             }
 
+            // 2. RECORD FORWARDING TIMESTAMP
+            decision.timestampOfForwardingRequest = System.currentTimeMillis()
+
+            // Execute the blocking call to the edge
             return client.newCall(requestBuilder.build()).execute().use { edgeResponse ->
-                val endTime = System.currentTimeMillis()
-                val rtt = endTime - decision.timestampOfForwardingRequest!!
 
-                // Update Rtt and Decrement Queue on success
-                if (edgeResponse.isSuccessful) {
-                    edgeRegistry.updateRtt(edge.ip, rtt, TaskType.LONG)
-                }
-
-                val status = if (edgeResponse.code == 202)
-                    Response.Status.ACCEPTED
-                else
-                    Response.Status.lookup(edgeResponse.code) ?: Response.Status.OK
+                // 3. RECORD RECEIVING FROM EDGE TIMESTAMP (Headers received)
+                decision.timestampOfReceivingEdgeResponse = System.currentTimeMillis()
 
                 val responseBody = edgeResponse.body?.bytes() ?: ByteArray(0)
 
-                // Finalize log as "Accepted"
-                decision.status = "Accepted"
+                // Calculate RTT for internal registry logic
+                val rtt = decision.timestampOfReceivingEdgeResponse!! - decision.timestampOfForwardingRequest!!
+
+                if (edgeResponse.isSuccessful) {
+                    edgeRegistry.updateRtt(edge.ip, rtt, TaskType.LONG)
+                    decision.status = "Success"
+                } else {
+                    decision.status = "Edge_Error_${edgeResponse.code}"
+                }
+
+                // 4. FINALIZE LOG (sets timestampOfSendingResponse and writes to CSV)
+                DecisionLogger.finalizeAndWrite(decision)
 
                 newFixedLengthResponse(
-                    status,
+                    Response.Status.lookup(edgeResponse.code) ?: Response.Status.OK,
                     edgeResponse.header("Content-Type") ?: "application/json",
                     ByteArrayInputStream(responseBody),
                     responseBody.size.toLong()
@@ -217,26 +212,15 @@ class ProxyServer(
             }
 
         } catch (e: Exception) {
-            // Decision logger
             decision.status = "Proxy_Error"
             DecisionLogger.finalizeAndWrite(decision)
-
-            logger("Error forwarding /recognize")
             Log.e("ProxyServer", "Error forwarding /recognize", e)
-
             return newFixedLengthResponse(Response.Status.INTERNAL_ERROR, "text/plain", "Proxy Error: ${e.message}")
         } finally {
-            // clean up temp file
+            // Clean up temp file
             if (tempImageFile?.exists() == true) {
-                if (tempImageFile.delete()) {
-                    logger("Successfully deleted temp file: ${tempImageFile.path}")
-                    Log.i("ProxyServer", "Successfully deleted temp file: ${tempImageFile.path}")
-                } else {
-                    logger("Failed to delete temp file: ${tempImageFile.path}")
-                    Log.w("ProxyServer", "Failed to delete temp file: ${tempImageFile.path}")
-                }
+                tempImageFile.delete()
             }
-
             // Always decrement queue of chosen edge
             edgeRegistry.decrementQueue(edge.ip)
         }
