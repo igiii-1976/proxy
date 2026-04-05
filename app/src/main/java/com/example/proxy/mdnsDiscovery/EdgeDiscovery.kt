@@ -130,6 +130,7 @@ class EdgeDiscovery(
                     val json = JSONObject(body)
                     val level = json.optString("level", "Unknown")
                     val status = json.optString("status", "Unknown")
+                    edgeRegistry.updateEnergyMetrics(ip, level)
                     edgeRegistry.upsert(ip, level, status)
                     logger("Successfully queried edge at $ip. Added/updated to registry.")
                     Log.d("EdgeDiscovery", "Successfully queried edge at $ip. Added to registry.")

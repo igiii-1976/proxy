@@ -17,6 +17,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.proxy.logger.DecisionLogger
@@ -145,11 +146,87 @@ class MainActivity : ComponentActivity() {
                                         elevation = CardDefaults.cardElevation(4.dp)
                                     ) {
                                         Column(modifier = Modifier.padding(12.dp)) {
-                                            Text("IP: ${edge.ip}")
+                                            Text("IP: ${edge.ip}", style = MaterialTheme.typography.titleMedium)
                                             Text("Battery: ${edge.battery}")
-                                            Text("Avg RTT (Long): ${String.format("%.2f", edge.avgLongRtt)} ms", color = Color.Red)
-                                            Text("Avg RTT (Short): ${String.format("%.2f", edge.avgShortRtt)} ms", color = Color.Blue)
-                                            Text("Active Queue: ${edge.currentQueue}")
+
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                Text("Avg RTT (Long): ", style = MaterialTheme.typography.bodySmall)
+                                                Text("${String.format("%.2f", edge.avgLongRtt)} ms", color = Color.Red, style = MaterialTheme.typography.bodySmall)
+                                            }
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                Text("Avg RTT (Short): ", style = MaterialTheme.typography.bodySmall)
+                                                Text("${String.format("%.2f", edge.avgShortRtt)} ms", color = Color.Blue, style = MaterialTheme.typography.bodySmall)
+                                            }
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                Text("Energy Cost (B/s): ", style = MaterialTheme.typography.bodySmall)
+                                                Text(
+                                                    text = String.format("%.8f", edge.energyCost),
+                                                    color = Color(0xFF2E7D32), // Dark Green color
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                            }
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                val predictedLong = edge.energyCost * (edge.avgLongRtt / 1000.0)
+                                                Text("Pred. Cost (Long): ", style = MaterialTheme.typography.bodySmall)
+                                                Text(
+                                                    text = String.format("%.8f %%", predictedLong),
+                                                    color = Color(0xFFE65100), // Orange
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                            }
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                val predictedShort = edge.energyCost * (edge.avgShortRtt / 1000.0)
+                                                Text("Pred. Cost (Short): ", style = MaterialTheme.typography.bodySmall)
+                                                Text(
+                                                    text = String.format("%.8f %%", predictedShort),
+                                                    color = Color(0xFFF57C00), // Lighter Orange
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                            }
+
+                                            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp), thickness = 0.5.dp)
+
+                                            // --- CONCURRENCY SETTER SECTION ---
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Column {
+                                                    Text("Active Tasks: ${edge.currentQueue}", fontWeight = FontWeight.Bold)
+                                                    Text("Max Recognition Limit: ${edge.maxConcurrentTasks}", style = MaterialTheme.typography.labelSmall)
+                                                }
+
+                                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                                    // Decrement Button
+                                                    FilledIconButton(
+                                                        onClick = {
+                                                            if (edge.maxConcurrentTasks > 1) {
+                                                                edgeRegistry.updateDeviceMaxConcurrency(edge.ip, edge.maxConcurrentTasks - 1)
+                                                            }
+                                                        },
+                                                        modifier = Modifier.size(32.dp),
+                                                        colors = IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.secondary)
+                                                    ) {
+                                                        Text("-", color = Color.White, fontSize = 20.sp)
+                                                    }
+
+                                                    Spacer(modifier = Modifier.width(16.dp))
+
+                                                    // Increment Button
+                                                    FilledIconButton(
+                                                        onClick = {
+                                                            edgeRegistry.updateDeviceMaxConcurrency(edge.ip, edge.maxConcurrentTasks + 1)
+                                                        },
+                                                        modifier = Modifier.size(32.dp)
+                                                    ) {
+                                                        Text("+", color = Color.White, fontSize = 20.sp)
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -168,7 +245,10 @@ class MainActivity : ComponentActivity() {
                             Box(
                                 modifier = Modifier
                                     .fillMaxSize()
-                                    .background(Color.Black.copy(alpha = 0.9f), shape = MaterialTheme.shapes.medium)
+                                    .background(
+                                        Color.Black.copy(alpha = 0.9f),
+                                        shape = MaterialTheme.shapes.medium
+                                    )
                                     .padding(8.dp)
                             ) {
                                 val listState = rememberLazyListState()
@@ -213,7 +293,8 @@ class MainActivity : ComponentActivity() {
                                                 .clickable {
                                                     edgeRegistry.selectedAlgorithm = algo
                                                     UiLogger.log("Algorithm changed to: ${algo.name}")
-                                                    showSettings = false // Close dialog after selection
+                                                    showSettings =
+                                                        false // Close dialog after selection
                                                 },
                                             color = if (isSelected) MaterialTheme.colorScheme.primaryContainer
                                             else Color.Transparent,
@@ -250,7 +331,7 @@ class MainActivity : ComponentActivity() {
     private fun startPeriodicMaintenance() {
         mainScope.launch {
             while (isActive) {
-                delay( 1 * 60 * 1000L) // 1 minute
+                delay( 5 * 60 * 1000L) // 5 minute
 
                 // Refresh the status of all currently known edges.
                 discovery?.refreshKnownEdges()

@@ -23,8 +23,8 @@ class ProxyServer(
 ) : NanoHTTPD(port) {
 
     private val client = OkHttpClient.Builder()
-        .connectTimeout(5, TimeUnit.SECONDS)
-        .readTimeout(10, TimeUnit.SECONDS)
+        .connectTimeout(60, TimeUnit.SECONDS)
+        .readTimeout(60, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
         .build()
 
@@ -125,7 +125,7 @@ class ProxyServer(
             )
 
         // Increase chosen edge's queue
-        edgeRegistry.incrementQueue(edge.ip)
+        edgeRegistry.incrementQueue(edge.ip, TaskType.LONG)
 
         // Capture the client's Request ID
         val clientRequestId = session.headers["x-client-request-id"] ?: "unknown"
@@ -190,17 +190,19 @@ class ProxyServer(
 
                 val responseBody = edgeResponse.body?.bytes() ?: ByteArray(0)
 
-                // Calculate RTT for internal registry logic
-                val rtt = decision.timestampOfReceivingEdgeResponse!! - decision.timestampOfForwardingRequest!!
+                // 4. Manually set End Timestamp for total RTT calculation
+                decision.timestampOfSendingResponse = System.currentTimeMillis()
+                val totalRtt = decision.rttMs ?: 0L
 
                 if (edgeResponse.isSuccessful) {
-                    edgeRegistry.updateRtt(edge.ip, rtt, TaskType.LONG)
                     decision.status = "Success"
+                    // Update algorithms using Total RTT (Full Proxy Round Trip)
+                    edgeRegistry.updateRtt(edge.ip, totalRtt, TaskType.LONG)
+                    edgeRegistry.recordWorkload(edge.ip, totalRtt)
                 } else {
                     decision.status = "Edge_Error_${edgeResponse.code}"
                 }
 
-                // 4. FINALIZE LOG (sets timestampOfSendingResponse and writes to CSV)
                 DecisionLogger.finalizeAndWrite(decision)
 
                 newFixedLengthResponse(
@@ -233,7 +235,7 @@ class ProxyServer(
             ?: return newFixedLengthResponse(Response.Status.SERVICE_UNAVAILABLE, "text/plain", "No edge")
 
         // Increase chosen edge's queue
-        edgeRegistry.incrementQueue(edge.ip)
+        edgeRegistry.incrementQueue(edge.ip, TaskType.SHORT)
 
         // 1. Capture Client Request ID
         val clientRequestId = session.headers["x-client-request-id"] ?: "unknown"
@@ -302,70 +304,79 @@ class ProxyServer(
                 "text/plain", "No edge servers available for file download"
             )
 
-        // First decision call (request endpoint, chosen edge IP, edge IP battery)
-        val decision = DecisionLogger.createRecord(session.uri, edge, "unknown")
+        // 1. Increment chosen edge's queue (Backpressure/SED logic)
+        edgeRegistry.incrementQueue(edge.ip, TaskType.SHORT)
 
-        // Construct the full URL, including the query string
+        // 2. Capture Client Request ID for end-to-end traceability
+        val clientRequestId = session.headers["x-client-request-id"] ?: "unknown"
+
+        // 3. Create initial decision record (Captures timestampOfReceivingRequest)
+        val decision = DecisionLogger.createRecord(session.uri, edge, clientRequestId)
+
+        // Construct the full URL, including the query string (e.g., ?file=test.txt)
         val queryString = if (session.queryParameterString != null) "?${session.queryParameterString}" else ""
         val edgeUrl = "http://${edge.ip}:8080${session.uri}$queryString"
-        logger("Forwarding download request to edge: $edgeUrl")
-        Log.i("ProxyServer", "Forwarding download request to edge: $edgeUrl")
 
-        val authorization = session.headers["authorization"]
+        logger("Forwarding download request to edge: $edgeUrl")
 
         return try {
-            val requestBuilder = Request.Builder().url(edgeUrl)
+            val requestBuilder = Request.Builder()
+                .url(edgeUrl)
+                .header("X-Client-Request-ID", clientRequestId)
 
-            if (authorization != null) {
-                requestBuilder.header("Authorization", authorization)
+            session.headers["authorization"]?.let {
+                requestBuilder.header("Authorization", it)
             }
 
+            // 4. RECORD FORWARDING TIMESTAMP (Proxy -> Edge)
+            decision.timestampOfForwardingRequest = System.currentTimeMillis()
+
             client.newCall(requestBuilder.build()).execute().use { edgeResponse ->
+
+                // 5. RECORD EDGE RESPONSE TIMESTAMP (Edge -> Proxy headers received)
+                decision.timestampOfReceivingEdgeResponse = System.currentTimeMillis()
+
                 if (!edgeResponse.isSuccessful) {
-                    val errorBody = edgeResponse.body?.string() ?: "Edge server returned error ${edgeResponse.code}"
-                    return newFixedLengthResponse(Response.Status.lookup(edgeResponse.code), "text/plain", errorBody)
+                    decision.status = "Download_Error_${edgeResponse.code}"
+                    decision.timestampOfSendingResponse = System.currentTimeMillis()
+                    DecisionLogger.finalizeAndWrite(decision)
+                    return newFixedLengthResponse(Response.Status.lookup(edgeResponse.code), "text/plain", "Error")
                 }
 
-                // Decision call for status (if response is success or not)
-                if (edgeResponse.isSuccessful) {
-                    decision.status = "Success"
-                } else {
-                    decision.status = "Edge_Error_${edgeResponse.code}"
-                }
-
-                // Read the entire file from the edge server
+                // Store and Forward
                 val fileBytes = edgeResponse.body?.bytes() ?: ByteArray(0)
-
-                // Second decision call (for file size)
                 decision.fileSizeBytes = fileBytes.size.toLong()
 
-                logger("Successfully downloaded ${fileBytes.size} bytes from edge.")
-                Log.i("ProxyServer", "Successfully downloaded ${fileBytes.size} bytes from edge.")
+                decision.timestampOfSendingResponse = System.currentTimeMillis()
+                val totalRtt = decision.rttMs ?: 0L
 
-                // Get data from the edge's response to forward to the client.
-                val mime = edgeResponse.header("Content-Type") ?: "application/octet-stream"
-                val length = fileBytes.size.toLong()
+                decision.status = "Success"
+                edgeRegistry.updateRtt(edge.ip, totalRtt, TaskType.SHORT)
+                edgeRegistry.recordWorkload(edge.ip, totalRtt)
 
-                // Third decision call (for timestamp of sending response back to client)
                 DecisionLogger.finalizeAndWrite(decision)
 
-                // FORWARD: Send the byte array to the client.
+                val mime = edgeResponse.header("Content-Type") ?: "application/octet-stream"
+
+                // FORWARD: Send the byte array to the client
                 newFixedLengthResponse(
                     Response.Status.OK,
                     mime,
                     ByteArrayInputStream(fileBytes),
-                    length
+                    fileBytes.size.toLong()
                 )
             }
         } catch (e: Exception) {
-            // Decision logger for proxy error
-            decision.status = "Proxy_Error"
+            decision.status = "Download_Proxy_Error"
             DecisionLogger.finalizeAndWrite(decision)
 
             logger("Error forwarding /download request")
             Log.e("ProxyServer", "Error forwarding /download request", e)
 
             newFixedLengthResponse(Response.Status.INTERNAL_ERROR, "text/plain", "Proxy Error: ${e.message}")
+        } finally {
+            // 7. ALWAYS decrement queue of chosen edge to release the lock
+            edgeRegistry.decrementQueue(edge.ip)
         }
     }
 

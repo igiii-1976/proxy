@@ -90,22 +90,22 @@ object DecisionLogger {
     // This should be called just before returning the final response to the client.
     @Synchronized
     fun finalizeAndWrite(decision: Decision) {
-        if (!isInitialized) {
-            Log.w("DecisionLogger", "Logger not initialized. Cannot record decision.")
-            return
+        if (!isInitialized) return
+
+        // Only set if not already manually set by the handler
+        if (decision.timestampOfSendingResponse == null) {
+            decision.timestampOfSendingResponse = System.currentTimeMillis()
         }
 
-        // Set the final timestamp before writing.
-        decision.timestampOfSendingResponse = System.currentTimeMillis()
-        // Remove from live queue as the request is finished
+        // Remove from live queue
         liveQueue.remove(decision.requestID)
+
+        // Log queue state to the text file
         logQueueSnapshot("REMOVED", decision.requestID)
 
         try {
             fileWriter?.append(decision.toCsvLine())
             fileWriter?.flush()
-
-            UiLogger.log("Decision '${decision.requestPath}': " + "Edge ${decision.chosenEdgeIp} | " + "RTT ${decision.rttMs}ms")
         } catch (e: Exception) {
             Log.e("DecisionLogger", "Failed to write to log file", e)
         }
