@@ -9,6 +9,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
@@ -114,9 +115,38 @@ class EdgeDiscovery(
 
                 // Query /status endpoint to get battery and status
                 scope.launch(Dispatchers.IO) {
+                    performHandshake(ip, port)
                     queryEdgeStatus(ip, port)
                 }
             }
+        }
+    }
+
+    private fun performHandshake(ip: String, port: Int) {
+        val proxyIp = getLocalIpAddress()
+        val proxyPort = 8080
+
+        // 1. Construct the URL (keeping parameters in query string is fine for POST,
+        // but the method must be set to POST)
+        val url = "http://$ip:$port/proxy-handshake?ip=$proxyIp&port=$proxyPort"
+
+        // 2. Create an empty request body for the POST request
+        val emptyBody = "".toRequestBody(null)
+
+        // 3. Explicitly set the method to .post()
+        val request = Request.Builder()
+            .url(url)
+            .post(emptyBody) // This makes it a POST request
+            .build()
+
+        try {
+            client.newCall(request).execute().use { response ->
+                logger("Handshake (POST) sent to $ip. Proxy identified as $proxyIp:$proxyPort")
+                Log.i("EdgeDiscovery", "Handshake POST successful for $ip")
+            }
+        } catch (e: Exception) {
+            logger("Handshake POST failed to $ip: ${e.message}")
+            Log.e("EdgeDiscovery", "Handshake error", e)
         }
     }
 
@@ -129,9 +159,11 @@ class EdgeDiscovery(
                     val body = response.body?.string() ?: ""
                     val json = JSONObject(body)
                     val level = json.optString("level", "Unknown")
-                    val status = json.optString("status", "Unknown")
-                    edgeRegistry.updateEnergyMetrics(ip, level)
-                    edgeRegistry.upsert(ip, level, status)
+                    val chargingStatus = json.optString("chargingStatus", "Unknown")
+                    val status = json.optString("status", "AVAILABLE")
+                    val androidVer = json.optInt("androidVersion", 0)
+                    val freeMem = json.optLong("freeMemory", 0)
+                    edgeRegistry.upsert(ip, level, "AVAILABLE", androidVer, freeMem)
                     logger("Successfully queried edge at $ip. Added/updated to registry.")
                     Log.d("EdgeDiscovery", "Successfully queried edge at $ip. Added to registry.")
                 } else {
@@ -170,5 +202,22 @@ class EdgeDiscovery(
             nsdManager.stopServiceDiscovery(it)
             discoveryListener = null
         }
+    }
+
+    private fun getLocalIpAddress(): String {
+        try {
+            val interfaces = java.net.NetworkInterface.getNetworkInterfaces()
+            for (intf in interfaces) {
+                val addrs = intf.inetAddresses
+                for (addr in addrs) {
+                    if (!addr.isLoopbackAddress && addr is java.net.Inet4Address) {
+                        return addr.hostAddress
+                    }
+                }
+            }
+        } catch (ex: Exception) {
+            Log.e("EdgeDiscovery", "Could not get local IP", ex)
+        }
+        return "127.0.0.1"
     }
 }

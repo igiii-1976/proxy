@@ -23,8 +23,10 @@ class ProxyServer(
 ) : NanoHTTPD(port) {
 
     private val client = OkHttpClient.Builder()
-        .connectTimeout(60, TimeUnit.SECONDS)
-        .readTimeout(60, TimeUnit.SECONDS)
+        .connectTimeout(0, TimeUnit.SECONDS)
+        .readTimeout(0, TimeUnit.SECONDS)
+        .writeTimeout(0, TimeUnit.SECONDS)
+        .callTimeout(0, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
         .build()
 
@@ -37,6 +39,8 @@ class ProxyServer(
         return when {
             uri == "/" && method == Method.GET -> handleHtmlRequest()
             uri == "/login" && method == Method.POST -> handleLoginRequest(session)
+
+            uri == "/status" && method == Method.POST -> handleStatusUpdateFromEdge(session)
 
             uri == "/recognize" && method == Method.POST -> handleRecognitionRequest(session)
             uri.startsWith("/result/") && method == Method.GET -> handleForwardingRequest(session)
@@ -117,6 +121,37 @@ class ProxyServer(
         }
     }
 
+    private fun handleStatusUpdateFromEdge(session: IHTTPSession): Response {
+        return try {
+            val files = HashMap<String, String>()
+            session.parseBody(files)
+
+            val postData = session.parameters
+            val status = postData["status"]?.firstOrNull() ?: "AVAILABLE"
+            val edgeIp = session.remoteIpAddress
+
+            Log.i("ProxyServer", "Status update from $edgeIp: $status")
+
+            edgeRegistry.updateStatus(edgeIp, status)
+
+            // Return a response with Keep-Alive headers
+            val response = newFixedLengthResponse(
+                Response.Status.OK,
+                "text/plain",
+                "ACK"
+            )
+            response.addHeader("Connection", "keep-alive")
+            return response
+
+        } catch (e: Exception) {
+            newFixedLengthResponse(
+                Response.Status.INTERNAL_ERROR,
+                "text/plain",
+                e.message
+            )
+        }
+    }
+
     private fun handleRecognitionRequest(session: IHTTPSession): Response {
         val edge = edgeRegistry.getBestEdge(TaskType.LONG)
             ?: return newFixedLengthResponse(
@@ -124,8 +159,7 @@ class ProxyServer(
                 "text/plain", "No edge servers available for recognition"
             )
 
-        // Increase chosen edge's queue
-        edgeRegistry.incrementQueue(edge.ip, TaskType.LONG)
+        edgeRegistry.incrementQueue(edge.ip)
 
         // Capture the client's Request ID
         val clientRequestId = session.headers["x-client-request-id"] ?: "unknown"
@@ -198,7 +232,6 @@ class ProxyServer(
                     decision.status = "Success"
                     // Update algorithms using Total RTT (Full Proxy Round Trip)
                     edgeRegistry.updateRtt(edge.ip, totalRtt, TaskType.LONG)
-                    edgeRegistry.recordWorkload(edge.ip, totalRtt)
                 } else {
                     decision.status = "Edge_Error_${edgeResponse.code}"
                 }
@@ -219,12 +252,11 @@ class ProxyServer(
             Log.e("ProxyServer", "Error forwarding /recognize", e)
             return newFixedLengthResponse(Response.Status.INTERNAL_ERROR, "text/plain", "Proxy Error: ${e.message}")
         } finally {
+            edgeRegistry.decrementQueue(edge.ip)
             // Clean up temp file
             if (tempImageFile?.exists() == true) {
                 tempImageFile.delete()
             }
-            // Always decrement queue of chosen edge
-            edgeRegistry.decrementQueue(edge.ip)
         }
     }
 
@@ -233,9 +265,6 @@ class ProxyServer(
     private fun handleBatteryRequest(session: IHTTPSession): Response {
         val edge = edgeRegistry.getBestEdge(TaskType.SHORT)
             ?: return newFixedLengthResponse(Response.Status.SERVICE_UNAVAILABLE, "text/plain", "No edge")
-
-        // Increase chosen edge's queue
-        edgeRegistry.incrementQueue(edge.ip, TaskType.SHORT)
 
         // 1. Capture Client Request ID
         val clientRequestId = session.headers["x-client-request-id"] ?: "unknown"
@@ -292,8 +321,6 @@ class ProxyServer(
             Log.e("ProxyServer", "Battery request failed", e)
             newFixedLengthResponse(Response.Status.INTERNAL_ERROR, "text/plain", "Error: ${e.message}")
         } finally {
-            // Always decrement queue of chosen edge
-            edgeRegistry.decrementQueue(edge.ip)
         }
     }
 
@@ -303,9 +330,6 @@ class ProxyServer(
                 Response.Status.SERVICE_UNAVAILABLE,
                 "text/plain", "No edge servers available for file download"
             )
-
-        // 1. Increment chosen edge's queue (Backpressure/SED logic)
-        edgeRegistry.incrementQueue(edge.ip, TaskType.SHORT)
 
         // 2. Capture Client Request ID for end-to-end traceability
         val clientRequestId = session.headers["x-client-request-id"] ?: "unknown"
@@ -352,7 +376,6 @@ class ProxyServer(
 
                 decision.status = "Success"
                 edgeRegistry.updateRtt(edge.ip, totalRtt, TaskType.SHORT)
-                edgeRegistry.recordWorkload(edge.ip, totalRtt)
 
                 DecisionLogger.finalizeAndWrite(decision)
 
@@ -375,8 +398,6 @@ class ProxyServer(
 
             newFixedLengthResponse(Response.Status.INTERNAL_ERROR, "text/plain", "Proxy Error: ${e.message}")
         } finally {
-            // 7. ALWAYS decrement queue of chosen edge to release the lock
-            edgeRegistry.decrementQueue(edge.ip)
         }
     }
 

@@ -1,118 +1,126 @@
 package com.example.proxy.mdnsDiscovery
 
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 
 data class EdgeDevice(
     val ip: String,
-    val battery: String,
-    val status: String,
+    var battery: String,
+    var status: String,
+    var androidVersion: Int = 0,
     val lastSeen: Long = System.currentTimeMillis(),
-    // RTTms data
     val longRttHistory: MutableList<Long> = mutableListOf(),
     val shortRttHistory: MutableList<Long> = mutableListOf(),
     var avgLongRtt: Double = 0.0,
     var avgShortRtt: Double = 0.0,
     var currentQueue: Int = 0,
-    var maxConcurrentTasks: Int = 3,
-    // Battery conservation data
-    var previousBattery: Int = -1,
-    var workloadAccumulatorMs: Long = 0,
-    var energyCost: Double = 0.0        // E = BatteryConsumed / WorkloadSeconds
+    var totalFreeMemory: Long = 0,
 )
 
 enum class TaskType { LONG, SHORT }
-
-enum class RoutingAlgorithm { HIGHEST_BATTERY, RANDOM, RTT_MS, BATTERY_CONSERVATION}
+enum class RoutingAlgorithm { HIGHEST_BATTERY, RANDOM, RTT_MS, BATTERY_CONSERVATION }
 
 class EdgeRegistry {
     private val edges = ConcurrentHashMap<String, EdgeDevice>()
+    private val availabilityLock = ReentrantLock()
+    private val availabilityCondition = availabilityLock.newCondition()
 
-    var selectedAlgorithm = RoutingAlgorithm.HIGHEST_BATTERY
+    var selectedAlgorithm = RoutingAlgorithm.RTT_MS
 
-    // --- Round Robin Counters for Probing ---
     private var lastLongProbeIndex = 0
     private var lastShortProbeIndex = 0
 
-    // Updates the max concurrency limit for a specific edge device by IP.
-    @Synchronized
-    fun updateDeviceMaxConcurrency(ip: String, limit: Int) {
-        edges[ip]?.let { device ->
-            synchronized(device) {
-                device.maxConcurrentTasks = limit
-                // Wake up any threads waiting for this specific device
-                (device as java.lang.Object).notifyAll()
-            }
-        }
-    }
-
-    @Synchronized
-    fun getBestEdge(taskType: TaskType): EdgeDevice? {
-        return when (selectedAlgorithm) {
-            RoutingAlgorithm.RANDOM -> getRandomEdge()
-            RoutingAlgorithm.HIGHEST_BATTERY -> chooseHighestBattery()
-            RoutingAlgorithm.RTT_MS -> chooseLowestRtt(taskType)
-            RoutingAlgorithm.BATTERY_CONSERVATION -> chooseLowestBatteryConsumption(taskType)
-        }
-    }
-
-    @Synchronized
-    private fun getRandomEdge(): EdgeDevice? {
-        val allEdges = edges.values.toList()
-        if (allEdges.isEmpty()) return null
-        return allEdges.random()
-    }
-
-    @Synchronized
-    private fun chooseHighestBattery(): EdgeDevice? {
-        return edges.values
-            .map { edge ->
-                val numeric = parseBatteryPercent(edge.battery)
-                Pair(edge, numeric)
-            }
-            .filter { it.second >= 0f }        // ignore invalid readings
-            .maxByOrNull { it.second }?.first  // return the EdgeDevice with highest numeric battery
-    }
-
     /**
-     * Start of RTTms strategy
+     * Blocks if no edges are AVAILABLE (First-Come, First-Served)
      */
-    @Synchronized
-    private fun chooseLowestRtt(taskType: TaskType): EdgeDevice? {
-        val allEdges = edges.values.toList()
-        if (allEdges.isEmpty()) return null
+    fun getBestEdge(taskType: TaskType): EdgeDevice? {
+        if (selectedAlgorithm == RoutingAlgorithm.RANDOM) {
+            return getRandomEdge()
+        }
 
-        // 1. Filter for edges that are NOT currently at their concurrency limit
-        val availableEdges = allEdges.filter { it.currentQueue < it.maxConcurrentTasks }
+        // Blocking logic for all other algorithms
+        availabilityLock.withLock {
+            var best: EdgeDevice? = findBestByAlgorithm(taskType)
 
-        // Determine candidate pool: prioritize those with room.
-        // If everyone is full, use the full list (it will wait in incrementQueue).
-        val candidatePool = if (availableEdges.isNotEmpty()) availableEdges else allEdges
+            // If no available edge found, wait until one becomes AVAILABLE
+            while (best == null && edges.isNotEmpty()) {
+                availabilityCondition.await()
+                best = findBestByAlgorithm(taskType)
+            }
+            return best
+        }
+    }
 
-        // Priority 1: Round Robin Probing for Edges with No History within the candidate pool
-        val edgesWithNoHistory = candidatePool.filter {
+    private fun findBestByAlgorithm(taskType: TaskType): EdgeDevice? {
+        val availableOnes = edges.values.filter { it.status == "AVAILABLE" }
+        if (availableOnes.isEmpty()) return null
+
+        return when (selectedAlgorithm) {
+            RoutingAlgorithm.RTT_MS -> chooseLowestRtt(taskType, availableOnes)
+            else -> availableOnes.random()
+        }
+    }
+
+    private fun getRandomEdge(): EdgeDevice? {
+        val all = edges.values.toList()
+        return if (all.isEmpty()) null else all.random()
+    }
+
+    private fun chooseLowestRtt(taskType: TaskType, availablePool: List<EdgeDevice>): EdgeDevice? {
+        // 1. Initial Round Robin for Edges with No History
+        val noHistory = availablePool.filter {
             if (taskType == TaskType.LONG) it.longRttHistory.isEmpty()
             else it.shortRttHistory.isEmpty()
         }.sortedBy { it.ip }
 
-        if (edgesWithNoHistory.isNotEmpty()) {
-            return if (taskType == TaskType.LONG) {
-                val index = lastLongProbeIndex % edgesWithNoHistory.size
-                val edge = edgesWithNoHistory[index]
-                lastLongProbeIndex++
-                edge
+        if (noHistory.isNotEmpty()) {
+            val edge = if (taskType == TaskType.LONG) {
+                noHistory[lastLongProbeIndex++ % noHistory.size]
             } else {
-                val index = lastShortProbeIndex % edgesWithNoHistory.size
-                val edge = edgesWithNoHistory[index]
-                lastShortProbeIndex++
-                edge
+                noHistory[lastShortProbeIndex++ % noHistory.size]
+            }
+            return edge
+        }
+
+        // 2. Inactivity Check (Priority: Send to edges with 0 queue)
+        // Check for edges doing nothing (currentQueue == 0)
+        val inactiveEdges = availablePool.filter { it.currentQueue == 0 }
+
+        if (inactiveEdges.isNotEmpty()) {
+            // Pick the first inactive edge found
+            val target = inactiveEdges.first()
+
+            // Step 3 & 5 logic: Define burst limit based on Android version
+            // Build.VERSION_CODES.N_MR1 is API 25 (Android 7.1)
+            val burstLimit = if (target.androidVersion <= 25) 8 else 10
+
+            // Only prioritize if it hasn't reached its burst limit yet
+            // This allows the proxy to "fill" inactive edges before going back to lowest RTT
+            if (target.currentQueue < burstLimit) {
+                return target
             }
         }
 
-        // Priority 2: Redirect to the "next best" edge (lowest RTT in the available pool)
-        return candidatePool.minByOrNull { edge ->
+        // 4. Default: Send to lowest Average RTT among available edges
+        return availablePool.minByOrNull { edge ->
             if (taskType == TaskType.LONG) edge.avgLongRtt else edge.avgShortRtt
         }
     }
+
+    // Call this when edge notifies "/status" or via mDNS refresh
+    fun updateStatus(ip: String, newStatus: String) {
+        val edge = edges[ip] ?: return
+        availabilityLock.withLock {
+            val wasBusy = edge.status == "BUSY"
+            edge.status = newStatus
+            // If it became AVAILABLE, wake up the next waiting request thread
+            if (wasBusy && newStatus == "AVAILABLE") {
+                availabilityCondition.signal()
+            }
+        }
+    }
+
 
     @Synchronized
     fun updateRtt(ip: String, newRtt: Long, taskType: TaskType) {
@@ -120,7 +128,6 @@ class EdgeRegistry {
         val history = if (taskType == TaskType.LONG) edge.longRttHistory else edge.shortRttHistory
 
         history.add(newRtt)
-//        if (history.size > 20) history.removeAt(0)
 
         if (taskType == TaskType.LONG) {
             edge.avgLongRtt = history.average()
@@ -132,115 +139,35 @@ class EdgeRegistry {
      * End of RTTms strategy
      */
 
-    /**
-     * Start of Battery conservation strategy
-     */
-    @Synchronized
-    fun recordWorkload(ip: String, durationMs: Long) {
-        edges[ip]?.let { it.workloadAccumulatorMs += durationMs }
-    }
-
-    private fun chooseLowestBatteryConsumption(taskType: TaskType): EdgeDevice? {
-        val allEdges = edges.values.toList()
-        if (allEdges.isEmpty()) return null
-
-        // 1. Initial Routing: Round Robin if no Energy Cost data or RTT data exists yet
-        val needsData = allEdges.filter {
-            it.energyCost <= 0.0 ||
-                    (if (taskType == TaskType.LONG) it.avgLongRtt <= 0.0 else it.avgShortRtt <= 0.0)
-        }.sortedBy { it.ip }
-
-        if (needsData.isNotEmpty()) {
-            return if (taskType == TaskType.LONG) {
-                val edge = needsData[lastLongProbeIndex % needsData.size]
-                lastLongProbeIndex++
-                edge
-            } else {
-                val edge = needsData[lastShortProbeIndex % needsData.size]
-                lastShortProbeIndex++
-                edge
-            }
-        }
-
-        // 2. Predict battery consumption: C = E * (AvgRTT / 1000)
-        return allEdges.minByOrNull { edge ->
-            val avgRtt = if (taskType == TaskType.LONG) edge.avgLongRtt else edge.avgShortRtt
-            val predictedConsumption = edge.energyCost * (avgRtt / 1000.0)
-            predictedConsumption * (1 + (edge.currentQueue * 0.3))
-        }
-    }
-
-    // Updates Energy Metrics (E = B / W). Called every 5 mins.
-    @Synchronized
-    fun updateEnergyMetrics(ip: String, currentBatteryStr: String) {
-        val edge = edges[ip] ?: return
-        val currentBat = parseBatteryPercent(currentBatteryStr).toInt()
-
-        if (edge.previousBattery != -1 && edge.workloadAccumulatorMs > 0) {
-            val batteryConsumed = (edge.previousBattery - currentBat).coerceAtLeast(0)
-            val workloadSeconds = edge.workloadAccumulatorMs / 1000.0
-
-            // Energy Cost E = Battery Lost per Second of active work
-            edge.energyCost = batteryConsumed / workloadSeconds
-        }
-
-        // Reset for next interval
-        edge.previousBattery = currentBat
-        edge.workloadAccumulatorMs = 0
-    }
-    /**
-     * End of Battery conservation strategy
-     */
-
-    // In EdgeRegistry.kt
-
-    fun incrementQueue(ip: String, taskType: TaskType) {
-        val edge = edges[ip] ?: return
-        synchronized(edge) {
-            // ONLY block if the task is LONG (Image Recognition)
-            if (taskType == TaskType.LONG) {
-                while (edge.currentQueue >= edge.maxConcurrentTasks) {
-                    try {
-                        (edge as java.lang.Object).wait()
-                    } catch (e: InterruptedException) {
-                        Thread.currentThread().interrupt()
-                    }
-                }
-            }
-
-            // We still increment the queue for ALL tasks so SED routing
-            // knows the total load on the CPU/Network
-            edge.currentQueue++
+    fun incrementQueue(ip: String) {
+        edges[ip]?.let {
+            synchronized(it) { it.currentQueue++ }
         }
     }
 
     fun decrementQueue(ip: String) {
-        val edge = edges[ip] ?: return
-        synchronized(edge) {
-            if (edge.currentQueue > 0) {
-                edge.currentQueue--
+        edges[ip]?.let {
+            synchronized(it) {
+                if (it.currentQueue > 0) it.currentQueue--
             }
-            // Notify the next thread in the "Proxy Queue" that a slot is open
-            (edge as java.lang.Object).notifyAll()
         }
     }
 
     @Synchronized
-    fun upsert(ip: String, battery: String, status: String) {
+    fun upsert(ip: String, battery: String, status: String, androidVer: Int = 0, freeMem: Long = 0) {
         val existing = edges[ip]
         if (existing != null) {
-            edges[ip] = existing.copy(
-                battery = battery,
-                status = status,
-                lastSeen = System.currentTimeMillis()
-            )
+            existing.battery = battery
+            existing.status = status
+            existing.androidVersion = androidVer
+            existing.totalFreeMemory = freeMem
         } else {
-            val newDevice = EdgeDevice(ip, battery, status, System.currentTimeMillis())
-            newDevice.previousBattery = parseBatteryPercent(battery).toInt()
+            val newDevice = EdgeDevice(ip, battery, status)
+            newDevice.androidVersion = androidVer
+            newDevice.totalFreeMemory = freeMem
             edges[ip] = newDevice
         }
     }
-
 
     @Synchronized
     fun getAll(): List<EdgeDevice> = edges.values.toList()
@@ -250,34 +177,13 @@ class EdgeRegistry {
         edges.remove(ip)
     }
 
-    @Synchronized
-    fun removeStale(stalenessThresholdMs: Long): Int {
-        val now = System.currentTimeMillis()
-        val originalSize = edges.size
-
-        val iterator = edges.entries.iterator()
-        while (iterator.hasNext()) {
-            val entry = iterator.next()
-            if (now - entry.value.lastSeen > stalenessThresholdMs) {
-                iterator.remove()
-            }
-        }
-
-        // Reset counters if all edges are lost/stale to start fresh
-        if (edges.isEmpty()) {
-            lastLongProbeIndex = 0
-            lastShortProbeIndex = 0
-        }
-
-        val newSize = edges.size
-        return originalSize - newSize
-    }
-
+    // Not used
     @Synchronized
     fun clear() {
         edges.clear()
     }
 
+    // Not used. For parsing battery percentage
     private fun parseBatteryPercent(percentStr: String?): Float {
         if (percentStr.isNullOrBlank()) return -1f
         // remove % and non-numeric characters, keep digits and dot and minus

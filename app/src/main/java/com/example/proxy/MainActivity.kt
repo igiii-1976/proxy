@@ -88,7 +88,7 @@ class MainActivity : ComponentActivity() {
         // Start proxy server and pass it the logger
         UiLogger.log("Starting Proxy Server...")
         proxy = ProxyServer(edgeRegistry, 8080, UiLogger::log) // Pass the log function
-        proxy?.start()
+        proxy?.start(0, false)
         UiLogger.log("Proxy Server started on port 8080.")
 
 
@@ -157,35 +157,6 @@ class MainActivity : ComponentActivity() {
                                                 Text("Avg RTT (Short): ", style = MaterialTheme.typography.bodySmall)
                                                 Text("${String.format("%.2f", edge.avgShortRtt)} ms", color = Color.Blue, style = MaterialTheme.typography.bodySmall)
                                             }
-                                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                                Text("Energy Cost (B/s): ", style = MaterialTheme.typography.bodySmall)
-                                                Text(
-                                                    text = String.format("%.8f", edge.energyCost),
-                                                    color = Color(0xFF2E7D32), // Dark Green color
-                                                    style = MaterialTheme.typography.bodySmall,
-                                                    fontWeight = FontWeight.Bold
-                                                )
-                                            }
-                                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                                val predictedLong = edge.energyCost * (edge.avgLongRtt / 1000.0)
-                                                Text("Pred. Cost (Long): ", style = MaterialTheme.typography.bodySmall)
-                                                Text(
-                                                    text = String.format("%.8f %%", predictedLong),
-                                                    color = Color(0xFFE65100), // Orange
-                                                    style = MaterialTheme.typography.bodySmall,
-                                                    fontWeight = FontWeight.Bold
-                                                )
-                                            }
-                                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                                val predictedShort = edge.energyCost * (edge.avgShortRtt / 1000.0)
-                                                Text("Pred. Cost (Short): ", style = MaterialTheme.typography.bodySmall)
-                                                Text(
-                                                    text = String.format("%.8f %%", predictedShort),
-                                                    color = Color(0xFFF57C00), // Lighter Orange
-                                                    style = MaterialTheme.typography.bodySmall,
-                                                    fontWeight = FontWeight.Bold
-                                                )
-                                            }
 
                                             HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp), thickness = 0.5.dp)
 
@@ -197,34 +168,7 @@ class MainActivity : ComponentActivity() {
                                             ) {
                                                 Column {
                                                     Text("Active Tasks: ${edge.currentQueue}", fontWeight = FontWeight.Bold)
-                                                    Text("Max Recognition Limit: ${edge.maxConcurrentTasks}", style = MaterialTheme.typography.labelSmall)
-                                                }
-
-                                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                                    // Decrement Button
-                                                    FilledIconButton(
-                                                        onClick = {
-                                                            if (edge.maxConcurrentTasks > 1) {
-                                                                edgeRegistry.updateDeviceMaxConcurrency(edge.ip, edge.maxConcurrentTasks - 1)
-                                                            }
-                                                        },
-                                                        modifier = Modifier.size(32.dp),
-                                                        colors = IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.secondary)
-                                                    ) {
-                                                        Text("-", color = Color.White, fontSize = 20.sp)
-                                                    }
-
-                                                    Spacer(modifier = Modifier.width(16.dp))
-
-                                                    // Increment Button
-                                                    FilledIconButton(
-                                                        onClick = {
-                                                            edgeRegistry.updateDeviceMaxConcurrency(edge.ip, edge.maxConcurrentTasks + 1)
-                                                        },
-                                                        modifier = Modifier.size(32.dp)
-                                                    ) {
-                                                        Text("+", color = Color.White, fontSize = 20.sp)
-                                                    }
+                                                    Text("Status: ${edge.status}")
                                                 }
                                             }
                                         }
